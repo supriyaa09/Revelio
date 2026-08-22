@@ -8,10 +8,15 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\""
+    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
+    "test:processing": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-processing.mts",
+    "probe:schema": "node scripts/probe-schema.mjs",
+    "probe:grants": "node scripts/probe-grants.mjs",
+    "diagnose:upload": "node scripts/diagnose-upload.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.18.0",
+    "@napi-rs/canvas": "^1.0.7",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.58.0",
     "clsx": "^2.1.1",

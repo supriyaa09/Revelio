@@ -54,12 +54,26 @@ export interface DocumentVersion {
   uploaded_by: string;
   change_note: string | null;
   processing_status: ProcessingState;
+  processing_stage: 'uploaded' | 'extracting' | 'analyzing' | 'indexing' | 'ready' | 'failed' | null;
   processing_error: string | null;
   extraction_method: 'text' | 'ocr' | 'mixed' | null;
   page_count: number | null;
   char_count: number;
   created_at: string;
   processed_at: string | null;
+}
+
+/** AI-derived analysis for one version. Absent means nothing has been run. */
+export interface DocumentInsights {
+  id: string;
+  document_id: string;
+  document_version_id: string;
+  summary: string | null;
+  key_points: string[];
+  entities: { name: string; type: string }[];
+  important_dates: { label: string; date: string; is_deadline: boolean }[];
+  model: string | null;
+  generated_at: string;
 }
 
 export interface DocumentRecord {

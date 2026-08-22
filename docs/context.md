@@ -21,8 +21,9 @@
 | Authorization | PostgreSQL Row Level Security |
 | Search | PostgreSQL full-text search (weighted `tsvector`) |
 | AI | Gemini, server-side only, from Phase 3 |
-| OCR | Fallback only, for scanned/image documents |
-| Current phase | **Phases 1–2 implemented.** Phase 3 (intelligence) is next. |
+| OCR | `tesseract.js` fallback, for scanned/image documents only |
+| PDF text | `unpdf` (bundled pdfjs), per page |
+| Current phase | **Phase 3 implemented** (extraction, OCR, AI, chunks). Phase 4 (search) is next. |
 
 ## Official Problem Statement
 
@@ -58,7 +59,7 @@ AI is an **enhancement layer**, not the product. It extracts metadata, classifie
 
 # Capabilities
 
-## Implemented (Phases 1–2)
+## Implemented (Phases 1–3)
 
 | Area | State |
 | --- | --- |
@@ -66,9 +67,14 @@ AI is an **enhancement layer**, not the product. It extracts metadata, classifie
 | Roles | `student`, `faculty`, `hod` — resolved server-side |
 | Upload | Server-validated, into a private bucket, immutable per version |
 | Document records | Title, description, owner, folder, status, tags, metadata, versions |
-| Automatic organization | Deterministic keyword classifier over the taxonomy, with confidence and provenance |
+| **PDF text extraction** | `unpdf`, per page, with page count and char count |
+| **OCR fallback** | `tesseract.js` on rasterised pages; `text` / `ocr` / `mixed` recorded |
+| **AI analysis** | Gemini, JSON-only: summary, key points, entities, dates, deadlines |
+| **Automatic organization** | Content-based classification with confidence and matched terms |
+| **Retrieval chunks** | `document_chunks` with page ranges and per-chunk `tsvector` |
+| **Processing UX** | Real stages polled from the database, with retry |
 | Folder browsing | Two-level department → category tree |
-| Document detail | Metadata, preview, comments, versions, review history, audit trail |
+| Document detail | Metadata, insights, preview, comments, versions, review history, audit |
 | Workflow | Full state machine enforced in the database |
 | Versioning | Server-assigned numbers, previous versions retained |
 | Audit | Real rows written by database functions |
@@ -79,16 +85,70 @@ AI is an **enhancement layer**, not the product. It extracts metadata, classifie
 
 | Area | Phase |
 | --- | --- |
-| Text extraction from PDFs | 3 |
-| OCR fallback for scanned documents | 3 |
-| AI metadata extraction, entity and date extraction | 3 |
-| AI summaries | 3 |
-| Full-text search over extracted text | 4 |
+| Full-text search over extracted text (chunks exist; search UI still title/description only) | 4 |
 | Similar-document discovery | 4 |
 | Document Q&A with source citations | 5 |
 | Cross-document questions | 5 |
 
 Anything in this second table is **absent, not stubbed**. The UI states plainly that intelligence features are not enabled rather than showing placeholder output.
+
+---
+
+# Document Processing Pipeline (Phase 3)
+
+Runs in the Next.js Node runtime. **No Python service** — `PyMuPDF` was considered, but ADR-002 retired the FastAPI service and a second runtime and deploy target costs more than it buys in a 24-hour build. See ADR-029.
+
+| Concern | Implementation |
+| --- | --- |
+| PDF text | `unpdf` (bundled pdfjs), extracted **per page** so chunks carry real page ranges |
+| OCR | `tesseract.js`, English traineddata |
+| Rasterisation | `unpdf.renderPageAsImage` with an injected `@napi-rs/canvas` |
+| AI | Gemini via `@google/genai`, JSON-only with a response schema |
+| Trigger | `POST /api/documents/:id/process`, runs as the signed-in user |
+| Persistence | `SECURITY DEFINER` RPCs in `0007_processing.sql` |
+
+## Why definer RPCs rather than a service-role client
+
+Clients have no `UPDATE` privilege or policy on `document_versions` — versions are immutable to clients by design — and this deployment has no service-role key. The RPCs run as the table owner but re-check authorization themselves (`can_process_version`: caller owns the document, or is the HOD), so processing results can be written without weakening the immutability rule for *file* columns.
+
+## Extraction and OCR
+
+```text
+download → direct text layer per page
+             │
+             ├─ page has ≥ 100 chars  → keep it
+             └─ page is thin/empty    → rasterise that page → OCR
+                                         accept only if confidence ≥ 30
+                                         and it beats the text layer
+```
+
+`extraction_method` records what actually happened: `text` (no OCR needed), `ocr` (no usable text layer anywhere), `mixed` (some pages from the text layer, some from OCR). **OCR is a fallback, never the default** — a PDF with a good text layer never loads the OCR or canvas modules at all. OCR is capped at 15 pages per document to bound worst-case time.
+
+Uploaded images (PNG/JPEG) have no text layer by definition, so they go straight to OCR.
+
+## AI analysis
+
+Gemini is called with `responseMimeType: 'application/json'` plus an explicit `responseSchema`, so the output is structured by construction rather than parsed out of prose. It extracts `document_type`, `department`, `category`, `tags`, `summary`, `key_points`, `entities`, `important_dates` (with a `is_deadline` flag) and `document_date`.
+
+Three anti-hallucination measures:
+
+1. The model may only choose a **department/category slug from the actual seeded taxonomy**. A slug it invents resolves to nothing and is discarded.
+2. The parsed response is re-validated and clamped in `coerce()` — dates must match `YYYY-MM-DD`, arrays are bounded, confidence is clamped to 0–1.
+3. Every failure path returns `ok: false` with a machine-readable reason (`NO_API_KEY`, `NO_TEXT`, `API_ERROR`, `MALFORMED_OUTPUT`). **Nothing is displayed as AI output unless it was really generated and stored.**
+
+## Automatic organization
+
+The classifier now runs over **extracted content plus metadata**, not just title and filename. `system_metadata.classification.basis` moves from `title_and_filename` to `extracted_text`, and matched terms and confidence are recorded either way so the UI can always explain the filing.
+
+Two rules: a category the **user** chose is never overwritten (`category_source = 'user'` wins in `apply_ai_metadata`), and a weak deterministic match (confidence < 0.35) is **not applied at all** rather than fabricating a folder.
+
+## Processing states
+
+`uploaded → extracting → analyzing → indexing → ready`, or `failed`. The stage lives in `document_versions.processing_stage`; `processing_status` remains the authoritative coarse state. The UI polls the real column — the progress display is not a timed animation.
+
+## Failure guarantee
+
+**A processing failure never destroys the uploaded document, its stored file, or any prior version.** Every failure path records a specific reason (`INVALID_PDF`, `PASSWORD_PROTECTED_PDF`, `OCR_FAILED`, `DOWNLOAD_FAILED`, `UNSUPPORTED_FILE_TYPE`, `NO_TEXT_EXTRACTED`), marks the version `failed`, and leaves it retryable. A document with no readable text is recorded as *completed with zero characters*, not as a failure — it is still stored, versioned and findable by title and metadata.
 
 ---
 
@@ -316,9 +376,10 @@ Criteria 1–4 and 9–12 are implemented today. 5–8 are the remaining phases.
 0002_security.sql        RLS, role helpers, workflow state machine, RPCs
 0003_storage.sql         private documents bucket + object policies
 0004_profile_backfill.sql  orphaned-profile repair, ensure_profile()
-0005_fix_search_trigger.sql  <-- NOT YET APPLIED; documents INSERT fails without it
-0006_table_grants.sql        <-- NOT YET APPLIED; every table read fails without it
-seed.sql                 taxonomy (departments + categories) — NOT YET RUN
+0005_fix_search_trigger.sql  applied
+0006_table_grants.sql        applied
+0007_processing.sql          <-- NOT YET APPLIED; Phase 3 processing RPCs
+seed.sql                 taxonomy (departments + categories) — applied
 ```
 
 **Authorization is two independent layers.** This distinction caused a whole debugging cycle, so it is recorded explicitly:

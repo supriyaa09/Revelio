@@ -258,6 +258,58 @@ Table-level privileges are granted to `authenticated` only, and are deliberately
 
 **Corollary:** the same applies to swallowed errors generally. The workspace discarded its taxonomy-load errors, rendering a missing grant as an empty folder tree indistinguishable from an unseeded database; and `mapDbError()` collapsed unmapped SQLSTATEs into "Something went wrong", hiding a `42703` trigger bug. All three are now surfaced.
 
+## ADR-029 Node-only processing pipeline; PyMuPDF declined
+**Status:** Accepted
+
+PDF extraction uses `unpdf` (a serverless-oriented pdfjs build) and OCR uses `tesseract.js`, both in the Next.js Node runtime. **No Python service.**
+
+**Why PyMuPDF was declined** despite being suggested: ADR-002 already retired the FastAPI service, and reintroducing it means a second runtime, a second deployment target, and a second free-tier host that spins down after 15 minutes — against a 24-hour budget. PyMuPDF extracts better and OCRs faster, but not by enough to justify that.
+
+**Accepted costs:**
+- `tesseract.js` is markedly slower than native Tesseract, hence the 15-page OCR cap.
+- `@napi-rs/canvas` is a native module, so it must stay in `serverExternalPackages` and cannot be bundled.
+- The route declares `maxDuration = 300`; a serverless host's own ceiling still applies, so a large scanned document may time out in production even though it completes locally.
+
+**Reconsider if** scanned-document throughput becomes a real bottleneck. The pipeline boundary is a single `processVersion()` call, so swapping in an HTTP call to a Python service is a contained change.
+
+## ADR-030 Rasterise via unpdf's canvasImport, not a hand-rolled page.render
+**Status:** Accepted
+
+Page rasterisation for OCR goes through `unpdf.renderPageAsImage(bytes, n, { canvasImport })` rather than driving `page.render({ canvasContext })` with our own canvas.
+
+**Why:** unpdf ships a serverless pdfjs bundle whose built-in `NodeCanvasFactory` is a stub. pdfjs needs a factory-created *scratch* canvas to paint an image XObject — so supplying our own target canvas is not enough. Every page containing an image, i.e. every scanned page and precisely the case OCR exists for, failed with `@napi-rs/canvas is not available in this environment`. `canvasImport` injects a real factory.
+
+This was caught by a test, not by review. The direct `page.render` approach worked perfectly on a text PDF and failed only on an image-bearing one.
+
+## ADR-031 Provenance is a parameter, never an assumption
+**Status:** Accepted
+
+`apply_ai_metadata` takes an explicit `p_source metadata_source` argument (`'ai'` or `'system'`), validated in the function body. The Gemini branch passes `'ai'`; the deterministic keyword classifier passes `'system'`.
+
+**Why:** the first implementation hardcoded `category_source = 'ai'` and `audit_logs.metadata->>'source' = 'ai'`. Two different engines call that function, so with no `GEMINI_API_KEY` the keyword classifier's decision was stored as `'ai'`, rendered with an **AI** badge, and audited as model output — attributing a filing to a model that was never invoked. The source comment even claimed the opposite.
+
+**Rule this generalises to:** when two callers with different trust or provenance semantics share a function, the distinguishing fact must be a parameter. A default that happens to be right for one caller is a latent lie for the other.
+
+## ADR-032 Derived analysis is keyed to a version, never to a document
+**Status:** Accepted
+
+`document_insights` is read by `document_version_id`, not by `document_id` with a newest-first limit.
+
+**Why:** the detail page originally selected the most recent insight row for the document. After uploading v2 (before it is processed), that returns **v1's** summary, key points, entities and dates, presented as the analysis of the version on screen. That is fabricated AI output by misattribution: real model output describing content the displayed version does not contain.
+
+Applies to every future derived artefact — chunks, embeddings, extracted text. Derived data belongs to the immutable version that produced it.
+
+## ADR-033 pdf.js detaches its input buffer
+**Status:** Accepted — recorded because it is invisible and cost a headline feature
+
+pdf.js **transfers** the `ArrayBuffer` it is given, leaving the caller's view with `byteLength === 0`. Any code path that hands the same array to pdf.js twice fails on the second call.
+
+The pipeline read the file once and passed that array to both `extractPdfText()` and every `renderPdfPageToPng()` call, so **all PDF OCR was dead**: after extraction the buffer was detached, and each render threw `Cannot perform %TypedArray%.prototype.slice on a detached ArrayBuffer`. A scanned PDF failed outright; a mixed PDF silently dropped its scanned pages while recording `extraction_method = 'text'` and reporting success.
+
+**Rule:** retain one pristine `Buffer` and hand pdf.js a fresh copy per call (`fileBytes` / `freshBytes()` in `pipeline.ts`).
+
+**Why the test suite missed it:** every test constructed a fresh `new Uint8Array(...)` per call, so no test reproduced the pipeline's actual buffer reuse. There is now an explicit regression test that keeps one retained buffer across extraction and multiple renders, plus one that asserts the detachment happens at all — so if pdf.js ever stops detaching, we find out deliberately rather than by accident.
+
 ## ADR-020 Personal catalogs are invisible to administrators
 **Status:** **Obsolete** — the desktop application was cancelled (see ADR-008/ADR-011 supersession by the one-web-app direction). Retained for the reasoning trail.
 

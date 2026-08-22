@@ -4,20 +4,120 @@
 
 ## Current Project Status
 
-- Last updated: 2026-08-22 21:20 IST
+- Last updated: 2026-08-23
 - Project name: **Revelio**
-- Current phase: Upload pipeline debugged; `0005`, `0006` and `seed.sql` await execution
-- Overall status: Builds and typechecks; upload blocked on two pending migrations
+- Current phase: **Phase 3 implemented** (extraction, OCR, AI, chunks). Phase 4 (search) is next.
+- Overall status: Typechecks, builds, 28/28 processing tests pass; `0007` awaits execution
 - Selected problem: FS-05 Document Management
 - Product shape: **ONE web application** (intelligent workspace + institutional governance)
 - Roles: **`student`, `faculty`, `hod`** — three only, no admin
 - Workflow: `draft → submitted → faculty_review | hod_review → approved / rejected / changes_requested`
 - Deployment status: Not deployed
-- Blocker: apply `0005_fix_search_trigger.sql`, `0006_table_grants.sql`, then `seed/seed.sql`
+- Blocker: apply `0007_processing.sql`; optionally set `GEMINI_API_KEY` for AI analysis
 
 ---
 
 ## Change Log
+
+### 2026-08-23 — Phase 3: real document intelligence (extraction, OCR, AI, chunks)
+
+#### Change
+
+**Added — processing pipeline (`frontend/src/lib/processing/`)**
+
+- `extract.ts` — per-page PDF text via `unpdf`; page rasterisation; normalisation (de-hyphenation across line breaks, whitespace collapse); `MIN_CHARS_PER_PAGE = 100` OCR trigger; `MAX_STORED_CHARS = 200_000` cap.
+- `ocr.ts` — `tesseract.js` fallback. Worker created per run and always terminated in `finally`; batched across pages; `MAX_OCR_PAGES = 15`; `MIN_OCR_CONFIDENCE = 30`.
+- `chunk.ts` — 1,800-char chunks with 200-char overlap, real `page_start`/`page_end`, `MAX_CHUNKS = 400`.
+- `gemini.ts` — `@google/genai` with `responseMimeType: 'application/json'` **and** an explicit `responseSchema`; taxonomy constrained to real seeded slugs; `coerce()` re-validates and clamps everything; every failure returns `ok: false` with a reason.
+- `pipeline.ts` — orchestrator. Stages, failure isolation, provenance.
+
+**Added — database**
+
+- `supabase/migrations/0007_processing.sql`: `document_versions.processing_stage`; `can_process_version()`; and four `SECURITY DEFINER` RPCs — `set_version_processing`, `save_document_insights`, `save_document_chunks`, `apply_ai_metadata`.
+
+**Added — app**
+
+- `POST /api/documents/:id/process` (Node runtime, `maxDuration = 300`).
+- `components/processing-status.tsx` — real stages polled from `document_versions`, with retry.
+- Document detail now renders stored summary, key points, entities and important dates, each labelled AI.
+
+**Added — tests**
+
+- `scripts/test-processing.mts` — **28 tests, all passing**, covering all five required file types plus regressions.
+- `scripts/register-hook.mjs` + `ts-ext-hook.mjs` — Node ESM resolution for extensionless TS imports, so app source stays idiomatic.
+- `npm run test:processing`.
+
+**Modified**
+
+- `next.config.ts` — `serverExternalPackages: ['@napi-rs/canvas', 'tesseract.js', 'unpdf']`. Native `.node` binaries and tesseract's wasm/worker assets cannot be webpack-bundled.
+- `lib/classify.ts` is now called with extracted text, not just title and filename.
+- `lib/types.ts` — `processing_stage`, `DocumentInsights`.
+
+**Dependencies added:** `unpdf`, `tesseract.js`, `@google/genai`, `@napi-rs/canvas`.
+
+**Not changed:** the approval workflow, transitions, roles, RLS policies, storage policies.
+
+#### Deviation from the brief
+
+PyMuPDF was declined. ADR-002 retired the FastAPI service, and a second runtime plus a second free-tier deploy target costs more than it buys inside 24 hours. `unpdf` + `tesseract.js` run in the existing Node runtime. See ADR-029 for the accepted costs and the reconsider trigger.
+
+#### Four defects found and fixed before reporting
+
+An adversarial review (6 independent lenses, findings then attacked by skeptics defaulting to *refuted*; 28 agents, 1 refuted, 1 verifier errored) found four real defects. **Two were things my own passing test suite could not see.**
+
+**1. CRITICAL — pdf.js detaches its input buffer, so all PDF OCR was dead.**
+`extractPdfText(bytes)` transfers the `ArrayBuffer`; the subsequent `renderPdfPageToPng(bytes, …)` then threw `Cannot perform %TypedArray%.prototype.slice on a detached ArrayBuffer`. A scanned PDF failed outright and retried identically; a **mixed** PDF silently dropped its scanned pages while recording `extraction_method = 'text'` and reporting success. Found independently by 3 of the 6 lenses.
+*Fix:* retain one pristine `Buffer`, hand out `freshBytes()` per call. *Why tests missed it:* every test passed a fresh array per call, never reproducing the pipeline's reuse. Now covered by three regression tests.
+
+**2. CRITICAL — the detail page showed another version's AI insights as the current version's analysis.**
+The query selected the newest `document_insights` row by `document_id`. After uploading v2, v1's summary, entities and dates were rendered as the analysis of v2 — real model output misattributed to content it never saw, which is a fabrication violation.
+*Fix:* key insights by `document_version_id`. See ADR-032.
+
+**3. HIGH — `splitLongText` made zero forward progress on some inputs.**
+`rest.slice(Math.max(0, cut - CHUNK_OVERLAP))` returned the same string whenever `cut <= 200`, spinning to `MAX_CHUNKS`. Measured on a page whose only space is at index 40: **400 chunks, 1 unique**. After the fix: **9 chunks, 9 unique** — verified by running the pre-fix logic in an isolated copy.
+*Fix:* skip the overlap rather than stall when `cut <= CHUNK_OVERLAP`.
+
+**4. HIGH — deterministic keyword classification was stored and audited as AI output.**
+`apply_ai_metadata` hardcoded `category_source = 'ai'` and `audit metadata source = 'ai'`, but two engines call it. Without `GEMINI_API_KEY`, the keyword classifier's decision got an **AI** badge and an AI audit entry — while the source comment claimed the opposite.
+*Fix:* explicit `p_source metadata_source` parameter, validated in-function; Gemini passes `'ai'`, the classifier passes `'system'`. See ADR-031.
+
+A fifth issue surfaced during testing rather than review: unpdf's serverless pdfjs bundle has a **stub** `NodeCanvasFactory`, so hand-rolled `page.render()` failed on every page containing an image — exactly the scanned pages OCR exists for. Switched to `renderPageAsImage` with an injected `canvasImport`. See ADR-030.
+
+#### Test results — 28 passed, 0 failed
+
+| Group | Coverage |
+| --- | --- |
+| Normal text PDF | Multi-page extraction, per-page isolation, OCR correctly **not** triggered |
+| Scanned PDF | No text layer detected → flagged → rasterised → **OCR recovered "BUDGET APPROVAL 2026"** |
+| Poor / empty PDF | Zero text treated as success, not failure; blank OCR returns no noise |
+| Invalid file | Garbage bytes and truncated headers both rejected by throw |
+| Large file | 30 pages / 41,631 chars in 45 ms; storage cap enforced |
+| Buffer reuse | Detachment asserted; extract-then-render from one retained buffer; 3-page scan |
+| Chunking | Index contiguity, page ranges, oversized split, stall regressions, `MAX_CHUNKS` |
+
+Fixtures are genuinely constructed, including a real image-only PDF with an embedded JPEG (`DCTDecode`) so the OCR path is exercised for real rather than mocked.
+
+#### Verification status
+
+| Item | Status |
+| --- | --- |
+| `npm run typecheck` | **Passes**, zero errors |
+| `npm run build` | **Passes**, 11 routes incl. the process endpoint |
+| `npm run test:processing` | **28 passed, 0 failed** |
+| Adversarial review | 4 confirmed defects, all fixed |
+| `0007_processing.sql` applied | **NO — not executed** |
+| End-to-end upload → process → insights | **NOT VERIFIED** |
+| Gemini call against the live API | **NOT VERIFIED** — no `GEMINI_API_KEY` present |
+
+Extraction, OCR, rasterisation and chunking are proven by executed tests. The **database RPCs and the Gemini call have never run**: `0007` is not applied and no API key is configured. With no key the pipeline is designed to degrade to extraction plus deterministic keyword classification, and to say so rather than invent output — but that degradation path is also unexecuted.
+
+#### Status
+
+- [x] Planned
+- [x] Implemented
+- [~] Tested — pipeline modules yes (28/28); database RPCs and Gemini no
+- [ ] Deployed
+
 
 ### 2026-08-22 21:20 IST — Fix `permission denied for table categories` (missing GRANTs)
 

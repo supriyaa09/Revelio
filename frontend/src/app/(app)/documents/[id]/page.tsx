@@ -8,7 +8,8 @@ import { ProcessingBadge, StatusBadge } from '@/components/badges';
 import { formatBytes, formatDateTime } from '@/components/ui';
 import { WorkflowActions } from '@/components/workflow-actions';
 import { CommentForm } from '@/components/comment-form';
-import type { AuditEntry, DocumentVersion, ReviewEntry } from '@/lib/types';
+import { ProcessingStatus } from '@/components/processing-status';
+import type { AuditEntry, DocumentInsights, DocumentVersion, ReviewEntry } from '@/lib/types';
 
 export default async function DocumentDetailPage({
   params,
@@ -36,14 +37,14 @@ export default async function DocumentDetailPage({
   // which is what we want — existence is not leaked.
   if (!doc) notFound();
 
-  const [{ data: versions }, { data: comments }, { data: reviews }, { data: audit }] =
+  const [{ data: versions }, { data: comments }, { data: reviews }, { data: audit }, { data: insights }] =
     await Promise.all([
       supabase
         .from('document_versions')
         .select(
           `id, document_id, version_number, storage_path, original_filename, mime_type,
-           file_size, uploaded_by, change_note, processing_status, processing_error,
-           extraction_method, page_count, char_count, created_at, processed_at,
+           file_size, uploaded_by, change_note, processing_status, processing_stage,
+           processing_error, extraction_method, page_count, char_count, created_at, processed_at,
            uploader:profiles!document_versions_uploaded_by_fkey (id, full_name)`,
         )
         .eq('document_id', id)
@@ -70,6 +71,18 @@ export default async function DocumentDetailPage({
         .eq('document_id', id)
         .order('created_at', { ascending: false })
         .limit(50),
+      // Insights belong to a VERSION, not a document. Querying by document_id
+      // and taking the newest row would show v1's analysis as if it described
+      // the current v2 — i.e. AI output attributed to content it never saw.
+      doc.current_version_id
+        ? supabase
+            .from('document_insights')
+            .select(
+              'id, document_id, document_version_id, summary, key_points, entities, important_dates, model, generated_at',
+            )
+            .eq('document_version_id', doc.current_version_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
 
   const allVersions = (versions ?? []) as unknown as (DocumentVersion & {
@@ -88,6 +101,7 @@ export default async function DocumentDetailPage({
 
   const isOwner = doc.owner_id === profile.id;
   const classification = (doc.system_metadata as Record<string, any>)?.classification;
+  const insight = (insights ?? null) as DocumentInsights | null;
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -166,22 +180,125 @@ export default async function DocumentDetailPage({
             )}
           </section>
 
-          {/* Extraction / intelligence status — honest about what has run. */}
+          {/* Document intelligence — only real, persisted output is shown. */}
           <section className="card p-5">
             <h2 className="font-medium">Document intelligence</h2>
+
             {current?.processing_status === 'completed' ? (
-              <p className="mt-2 text-sm text-slate-600">
-                Text extracted ({current.char_count.toLocaleString()} characters
-                {current.extraction_method ? `, via ${current.extraction_method}` : ''}).
-              </p>
+              <>
+                <p className="mt-2 text-xs text-slate-500">
+                  {current.char_count.toLocaleString()} characters extracted
+                  {current.page_count ? ` from ${current.page_count} page(s)` : ''}
+                  {current.extraction_method
+                    ? ` · method: ${
+                        current.extraction_method === 'text'
+                          ? 'direct text layer'
+                          : current.extraction_method === 'ocr'
+                            ? 'OCR'
+                            : 'mixed (text + OCR)'
+                      }`
+                    : ''}
+                </p>
+
+                {current.char_count === 0 && (
+                  <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    No readable text was found in this file, even after OCR. The document is stored
+                    and searchable by title and metadata.
+                  </p>
+                )}
+
+                {insight ? (
+                  <div className="mt-4 space-y-4">
+                    {insight.summary && (
+                      <div>
+                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Summary
+                          <span className="ml-1.5 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-medium normal-case text-violet-700">
+                            AI
+                          </span>
+                        </h3>
+                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                          {insight.summary}
+                        </p>
+                      </div>
+                    )}
+
+                    {insight.key_points.length > 0 && (
+                      <div>
+                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Key points
+                        </h3>
+                        <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                          {insight.key_points.map((p, i) => (
+                            <li key={i}>{p}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {insight.important_dates.length > 0 && (
+                      <div>
+                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Important dates
+                        </h3>
+                        <ul className="mt-1 space-y-1 text-sm">
+                          {insight.important_dates.map((d, i) => (
+                            <li key={i} className="flex items-center gap-2">
+                              <span className="font-mono text-xs text-slate-500">{d.date}</span>
+                              <span className="text-slate-700">{d.label}</span>
+                              {d.is_deadline && (
+                                <span className="rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-700">
+                                  deadline
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {insight.entities.length > 0 && (
+                      <div>
+                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Entities
+                        </h3>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          {insight.entities.map((e, i) => (
+                            <span
+                              key={i}
+                              className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
+                              title={e.type}
+                            >
+                              {e.name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insight.model && (
+                      <p className="text-[11px] text-slate-400">
+                        Generated by {insight.model} on {formatDateTime(insight.generated_at)}. AI
+                        output is a suggestion and does not replace your own metadata.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-500">
+                    Text was extracted, but no AI analysis is stored for this version. This happens
+                    when no <code className="text-xs">GEMINI_API_KEY</code> is configured, or the
+                    provider call failed. Nothing is shown in place of it.
+                  </p>
+                )}
+              </>
             ) : current?.processing_status === 'failed' ? (
               <p className="mt-2 text-sm text-red-700">
                 Processing failed: {current.processing_error ?? 'unknown error'}
               </p>
             ) : (
               <p className="mt-2 text-sm text-slate-500">
-                Text extraction, OCR fallback, summaries and Q&amp;A are not enabled yet. The file is
-                stored and organized; intelligence features arrive in the next phase.
+                This version has not been processed yet. Use the Processing panel to extract text and
+                analyze it.
               </p>
             )}
           </section>
@@ -229,6 +346,17 @@ export default async function DocumentDetailPage({
 
         {/* Sidebar */}
         <aside className="space-y-6">
+          {current && (
+            <ProcessingStatus
+              documentId={doc.id}
+              versionId={current.id}
+              initialStatus={current.processing_status}
+              initialStage={current.processing_stage}
+              initialError={current.processing_error}
+              canProcess={isOwner || profile.role === 'hod'}
+            />
+          )}
+
           <WorkflowActions
             documentId={doc.id}
             status={doc.workflow_status}

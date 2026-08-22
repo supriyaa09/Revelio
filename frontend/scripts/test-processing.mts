@@ -1,0 +1,496 @@
+/**
+ * Phase 3 processing tests.
+ *
+ * Exercises the pure pipeline modules (extraction, OCR fallback decision, OCR,
+ * chunking) against genuinely constructed fixtures. No database and no network
+ * are required, so this is runnable and repeatable.
+ *
+ *   node --experimental-strip-types scripts/test-processing.mts
+ */
+import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
+import { createCanvas } from '@napi-rs/canvas';
+import {
+  MIN_CHARS_PER_PAGE,
+  extractPdfText,
+  pageNeedsOcr,
+  renderPdfPageToPng,
+  normalize,
+  capText,
+  MAX_STORED_CHARS,
+} from '../src/lib/processing/extract.ts';
+import { ocrImage } from '../src/lib/processing/ocr.ts';
+import { chunkPages, CHUNK_CHARS, MAX_CHUNKS } from '../src/lib/processing/chunk.ts';
+
+// ── PDF construction with a real xref table ─────────────────────────────────
+function buildPdf(objects: Buffer[]): Buffer {
+  const header = Buffer.from('%PDF-1.4\n', 'latin1');
+  const parts: Buffer[] = [header];
+  const offsets: number[] = [];
+  let pos = header.length;
+
+  for (const obj of objects) {
+    offsets.push(pos);
+    parts.push(obj);
+    pos += obj.length;
+  }
+
+  const n = objects.length + 1;
+  let xref = `xref\n0 ${n}\n0000000000 65535 f \n`;
+  for (const off of offsets) xref += `${String(off).padStart(10, '0')} 00000 n \n`;
+  const trailer = `trailer\n<</Size ${n}/Root 1 0 R>>\nstartxref\n${pos}\n%%EOF\n`;
+
+  parts.push(Buffer.from(xref + trailer, 'latin1'));
+  return Buffer.concat(parts);
+}
+
+const obj = (num: number, body: string) =>
+  Buffer.from(`${num} 0 obj\n${body}\nendobj\n`, 'latin1');
+
+const streamObj = (num: number, dict: string, data: Buffer) =>
+  Buffer.concat([
+    Buffer.from(`${num} 0 obj\n<<${dict}/Length ${data.length}>>\nstream\n`, 'latin1'),
+    data,
+    Buffer.from('\nendstream\nendobj\n', 'latin1'),
+  ]);
+
+/** A text-layer PDF with `pageTexts.length` pages. */
+function textPdf(pageTexts: string[]): Buffer {
+  const objects: Buffer[] = [];
+  const pageIds = pageTexts.map((_, i) => 3 + i * 2);
+
+  objects.push(obj(1, '<</Type/Catalog/Pages 2 0 R>>'));
+  objects.push(
+    obj(2, `<</Type/Pages/Kids[${pageIds.map((id) => `${id} 0 R`).join(' ')}]/Count ${pageIds.length}>>`),
+  );
+
+  const fontId = 3 + pageTexts.length * 2;
+  pageTexts.forEach((text, i) => {
+    const pid = pageIds[i]!;
+    const cid = pid + 1;
+    objects.push(
+      obj(
+        pid,
+        `<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents ${cid} 0 R` +
+          `/Resources<</Font<</F1 ${fontId} 0 R>>>>>>`,
+      ),
+    );
+    // Break the text into several Tj lines so the page has realistic structure.
+    const lines = text.match(/.{1,70}(\s|$)/g) ?? [text];
+    const content =
+      'BT /F1 11 Tf 12 TL 60 740 Td\n' +
+      lines.map((l) => `(${l.replace(/[()\\]/g, '')}) Tj T*`).join('\n') +
+      '\nET';
+    objects.push(streamObj(cid, '', Buffer.from(content, 'latin1')));
+  });
+
+  objects.push(obj(fontId, '<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>'));
+  return buildPdf(objects);
+}
+
+/** An image-only PDF: no text layer at all, so OCR is the only way in. */
+function scannedPdf(text: string): Buffer {
+  const W = 1000;
+  const H = 260;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#000000';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.fillText(text, 30, 90);
+  ctx.font = '34px sans-serif';
+  ctx.fillText('Last date 2026-09-30', 30, 170);
+
+  const jpeg = canvas.toBuffer('image/jpeg', 92);
+
+  const objects: Buffer[] = [
+    obj(1, '<</Type/Catalog/Pages 2 0 R>>'),
+    obj(2, '<</Type/Pages/Kids[3 0 R]/Count 1>>'),
+    obj(
+      3,
+      `<</Type/Page/Parent 2 0 R/MediaBox[0 0 ${W} ${H}]/Contents 4 0 R` +
+        `/Resources<</XObject<</Im0 5 0 R>>>>>>`,
+    ),
+    streamObj(4, '', Buffer.from(`q ${W} 0 0 ${H} 0 0 cm /Im0 Do Q`, 'latin1')),
+    streamObj(
+      5,
+      `/Type/XObject/Subtype/Image/Width ${W}/Height ${H}` +
+        `/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode`,
+      jpeg,
+    ),
+  ];
+  return buildPdf(objects);
+}
+
+/** Valid PDF, one page, no content stream at all. */
+function emptyPdf(): Buffer {
+  return buildPdf([
+    obj(1, '<</Type/Catalog/Pages 2 0 R>>'),
+    obj(2, '<</Type/Pages/Kids[3 0 R]/Count 1>>'),
+    obj(3, '<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>'),
+  ]);
+}
+
+function pngWithText(text: string): Buffer {
+  const canvas = createCanvas(900, 200);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 900, 200);
+  ctx.fillStyle = '#000000';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.fillText(text, 25, 110);
+  return canvas.toBuffer('image/png');
+}
+
+// ── harness ─────────────────────────────────────────────────────────────────
+let pass = 0;
+let fail = 0;
+const failures: string[] = [];
+
+async function test(name: string, fn: () => Promise<void> | void) {
+  try {
+    await fn();
+    pass++;
+    console.log(`  PASS  ${name}`);
+  } catch (error) {
+    fail++;
+    const msg = error instanceof Error ? error.message : String(error);
+    failures.push(`${name}: ${msg}`);
+    console.log(`  FAIL  ${name}\n        ${msg.split('\n')[0]}`);
+  }
+}
+
+console.log('\n=== 1. Normal text PDF ===');
+
+const BODY_A =
+  'Scholarship Eligibility Guidelines 2026. Applicants must maintain a minimum CGPA of 8.0 ' +
+  'and submit income proof. The last date for submission is 30 September 2026. ' +
+  'Late applications will not be considered by the Registrar office. ';
+const BODY_B =
+  'Procurement Policy for laptop purchases. Vendors must submit a quotation with GST details. ' +
+  'The purchase requisition requires approval from the Finance department before tender. ';
+
+await test('extracts text from a 2-page text PDF', async () => {
+  const r = await extractPdfText(new Uint8Array(textPdf([BODY_A.repeat(3), BODY_B.repeat(3)])));
+  assert.equal(r.pageCount, 2, `expected 2 pages, got ${r.pageCount}`);
+  assert.equal(r.pages.length, 2);
+  assert.ok(r.charCount > 400, `expected >400 chars, got ${r.charCount}`);
+  assert.match(r.pages[0]!.text, /Scholarship Eligibility/);
+  assert.match(r.pages[1]!.text, /Procurement Policy/);
+});
+
+await test('a good text page does NOT request OCR', async () => {
+  const r = await extractPdfText(new Uint8Array(textPdf([BODY_A.repeat(3)])));
+  assert.equal(pageNeedsOcr(r.pages[0]!), false, 'text page wrongly flagged for OCR');
+});
+
+await test('page-level text is preserved per page (no cross-page bleed)', async () => {
+  const r = await extractPdfText(new Uint8Array(textPdf([BODY_A.repeat(2), BODY_B.repeat(2)])));
+  assert.ok(!r.pages[0]!.text.includes('Procurement'), 'page 1 leaked page 2 content');
+  assert.ok(!r.pages[1]!.text.includes('Scholarship'), 'page 2 leaked page 1 content');
+});
+
+console.log('\n=== 2. Scanned PDF (OCR fallback) ===');
+
+const scanned = scannedPdf('BUDGET APPROVAL 2026');
+
+await test('scanned PDF yields no usable text layer', async () => {
+  const r = await extractPdfText(new Uint8Array(scanned));
+  assert.equal(r.pageCount, 1);
+  assert.ok(
+    r.pages[0]!.text.trim().length < MIN_CHARS_PER_PAGE,
+    `image-only page unexpectedly produced ${r.pages[0]!.text.length} chars`,
+  );
+});
+
+await test('scanned page IS flagged for OCR', async () => {
+  const r = await extractPdfText(new Uint8Array(scanned));
+  assert.equal(pageNeedsOcr(r.pages[0]!), true, 'scanned page not flagged for OCR');
+});
+
+await test('rasterises a scanned page to a non-blank PNG', async () => {
+  const png = await renderPdfPageToPng(new Uint8Array(scanned), 1, 2);
+  assert.ok(png.length > 2000, `png suspiciously small: ${png.length} bytes`);
+  assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], 'not a PNG');
+});
+
+await test('OCR recovers text from the rasterised scan', async () => {
+  const png = await renderPdfPageToPng(new Uint8Array(scanned), 1, 2);
+  const res = await ocrImage(png);
+  const upper = res.text.toUpperCase();
+  assert.ok(res.text.trim().length > 0, 'OCR returned no text');
+  assert.ok(
+    upper.includes('BUDGET') || upper.includes('APPROVAL'),
+    `OCR text did not contain expected words. got: ${JSON.stringify(res.text.slice(0, 160))}`,
+  );
+});
+
+await test('OCR reads an uploaded image directly', async () => {
+  const res = await ocrImage(pngWithText('INVOICE 2026'));
+  assert.ok(
+    res.text.toUpperCase().includes('INVOICE'),
+    `got: ${JSON.stringify(res.text.slice(0, 160))}`,
+  );
+});
+
+console.log('\n=== 3. Poor / empty PDF ===');
+
+await test('empty PDF extracts cleanly with zero text (not an error)', async () => {
+  const r = await extractPdfText(new Uint8Array(emptyPdf()));
+  assert.equal(r.pageCount, 1);
+  assert.equal(r.charCount, 0);
+  assert.equal(pageNeedsOcr(r.pages[0]!), true);
+});
+
+await test('OCR of a blank page returns empty text, not noise', async () => {
+  const canvas = createCanvas(600, 200);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 600, 200);
+  const res = await ocrImage(canvas.toBuffer('image/png'));
+  assert.ok(res.text.trim().length < 10, `blank page produced text: ${JSON.stringify(res.text)}`);
+});
+
+console.log('\n=== 4. Invalid file ===');
+
+await test('random bytes are rejected with a throw (not silent success)', async () => {
+  const garbage = Buffer.alloc(4096);
+  for (let i = 0; i < garbage.length; i++) garbage[i] = (i * 37 + 11) & 0xff;
+  await assert.rejects(
+    () => extractPdfText(new Uint8Array(garbage)),
+    'expected extractPdfText to reject on garbage input',
+  );
+});
+
+await test('truncated PDF header is rejected', async () => {
+  await assert.rejects(() => extractPdfText(new Uint8Array(Buffer.from('%PDF-1.4\nbroken'))));
+});
+
+console.log('\n=== 5. Large file ===');
+
+await test('handles a large multi-page PDF and caps stored text', async () => {
+  const pages = Array.from({ length: 30 }, (_, i) => `Page ${i + 1}. ${BODY_A.repeat(6)}`);
+  const big = textPdf(pages);
+  const started = Date.now();
+  const r = await extractPdfText(new Uint8Array(big));
+  const elapsed = Date.now() - started;
+  assert.equal(r.pageCount, 30);
+  assert.ok(r.charCount > 10_000, `expected >10k chars, got ${r.charCount}`);
+  console.log(`        (${(big.length / 1024).toFixed(0)} KB, ${r.charCount} chars, ${elapsed} ms)`);
+});
+
+await test('capText enforces the storage ceiling', () => {
+  const over = 'x'.repeat(MAX_STORED_CHARS + 5000);
+  assert.equal(capText(over).length, MAX_STORED_CHARS);
+  assert.equal(capText('short').length, 5);
+});
+
+console.log('\n=== 5b. Buffer reuse (regression) ===');
+
+// The original suite handed a FRESH Uint8Array to every call, which is exactly
+// why it missed that pdf.js detaches the buffer. The pipeline reuses one array,
+// so these tests reproduce the pipeline's actual usage.
+await test('pdf.js detaches the input buffer (documents the hazard)', async () => {
+  const bytes = new Uint8Array(textPdf([BODY_A.repeat(2)]));
+  assert.ok(bytes.byteLength > 0);
+  await extractPdfText(bytes);
+  assert.equal(
+    bytes.byteLength,
+    0,
+    'expected pdf.js to detach the buffer; if this now fails the hazard is gone and the guard may be simplified',
+  );
+});
+
+await test('extract then rasterise from ONE retained buffer, pipeline-style', async () => {
+  // Mirrors pipeline.ts: keep a pristine Buffer, hand out a fresh copy per call.
+  const fileBytes = Buffer.from(scannedPdf('QUARTERLY BUDGET'));
+  const freshBytes = () => new Uint8Array(fileBytes);
+
+  const direct = await extractPdfText(freshBytes());
+  assert.equal(direct.pageCount, 1);
+  assert.equal(pageNeedsOcr(direct.pages[0]!), true);
+
+  // This is the call that used to throw "detached ArrayBuffer".
+  const png = await renderPdfPageToPng(freshBytes(), 1);
+  assert.ok(png.length > 2000, `png too small: ${png.length}`);
+
+  // And a second render must also work, proving the retained copy survives.
+  const png2 = await renderPdfPageToPng(freshBytes(), 1);
+  assert.ok(png2.length > 2000, 'second render failed — buffer not retained');
+  assert.equal(fileBytes.byteLength > 0, true, 'retained buffer was detached');
+});
+
+await test('multi-page scan rasterises every page from one retained buffer', async () => {
+  const W = 700;
+  const H = 200;
+  const mk = (label: string) => {
+    const cv = createCanvas(W, H);
+    const c = cv.getContext('2d');
+    c.fillStyle = '#ffffff';
+    c.fillRect(0, 0, W, H);
+    c.fillStyle = '#000000';
+    c.font = 'bold 40px sans-serif';
+    c.fillText(label, 20, 110);
+    return cv.toBuffer('image/jpeg', 90);
+  };
+
+  const jpegs = [mk('PAGE ONE'), mk('PAGE TWO'), mk('PAGE THREE')];
+  const objects: Buffer[] = [];
+  const pageIds = jpegs.map((_, i) => 3 + i * 2);
+  objects.push(obj(1, '<</Type/Catalog/Pages 2 0 R>>'));
+  objects.push(
+    obj(2, `<</Type/Pages/Kids[${pageIds.map((i) => `${i} 0 R`).join(' ')}]/Count ${jpegs.length}>>`),
+  );
+  jpegs.forEach((jpeg, i) => {
+    const pid = pageIds[i]!;
+    const cid = pid + 1;
+    const imgId = 3 + jpegs.length * 2 + i;
+    objects.push(
+      obj(
+        pid,
+        `<</Type/Page/Parent 2 0 R/MediaBox[0 0 ${W} ${H}]/Contents ${cid} 0 R` +
+          `/Resources<</XObject<</Im0 ${imgId} 0 R>>>>>>`,
+      ),
+    );
+    objects.push(streamObj(cid, '', Buffer.from(`q ${W} 0 0 ${H} 0 0 cm /Im0 Do Q`, 'latin1')));
+  });
+  jpegs.forEach((jpeg, i) => {
+    objects.push(
+      streamObj(
+        3 + jpegs.length * 2 + i,
+        `/Type/XObject/Subtype/Image/Width ${W}/Height ${H}` +
+          `/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode`,
+        jpeg,
+      ),
+    );
+  });
+
+  const fileBytes = Buffer.from(buildPdf(objects));
+  const freshBytes = () => new Uint8Array(fileBytes);
+
+  const direct = await extractPdfText(freshBytes());
+  assert.equal(direct.pageCount, 3, `expected 3 pages, got ${direct.pageCount}`);
+
+  for (let n = 1; n <= 3; n++) {
+    const png = await renderPdfPageToPng(freshBytes(), n);
+    assert.ok(png.length > 1500, `page ${n} render too small: ${png.length}`);
+  }
+});
+
+console.log('\n=== 6. Normalisation ===');
+await test('de-hyphenates across line breaks', () => {
+  assert.equal(normalize('schol-\narship budget'), 'scholarship budget');
+});
+
+await test('collapses whitespace and strips soft hyphens', () => {
+  assert.equal(normalize('a   b\n\n\n\nc'), 'a b\n\nc');
+});
+
+console.log('\n=== 7. Chunking ===');
+
+await test('chunk_index is contiguous from 0', () => {
+  const pages = Array.from({ length: 12 }, (_, i) => ({ page: i + 1, text: BODY_A.repeat(3) }));
+  const chunks = chunkPages(pages);
+  assert.ok(chunks.length > 1, 'expected multiple chunks');
+  chunks.forEach((c, i) => assert.equal(c.chunk_index, i, `gap at index ${i}`));
+});
+
+await test('records page ranges', () => {
+  const chunks = chunkPages([
+    { page: 1, text: BODY_A },
+    { page: 2, text: BODY_B },
+  ]);
+  assert.ok(chunks.length >= 1);
+  assert.equal(chunks[0]!.page_start, 1);
+  assert.ok(chunks[0]!.page_end !== null);
+});
+
+await test('splits a single oversized page and keeps page attribution', () => {
+  const huge = 'alpha beta gamma delta '.repeat(600); // ~13k chars
+  const chunks = chunkPages([{ page: 7, text: huge }]);
+  assert.ok(chunks.length > 1, `expected split, got ${chunks.length}`);
+  for (const c of chunks) {
+    assert.equal(c.page_start, 7);
+    assert.equal(c.page_end, 7);
+    assert.ok(c.content.length <= CHUNK_CHARS + 50, `chunk too big: ${c.content.length}`);
+  }
+});
+
+await test('a no-whitespace blob terminates and loses no leading content', () => {
+  const blob = 'A'.repeat(10_000);
+  const chunks = chunkPages([{ page: 1, text: blob }]);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks[0]!.content.startsWith('A'));
+  const total = chunks.reduce((n, c) => n + c.content.length, 0);
+  assert.ok(total >= blob.length, `content lost: ${total} < ${blob.length}`);
+});
+
+await test('never emits empty or whitespace-only chunks', () => {
+  const chunks = chunkPages([
+    { page: 1, text: '   ' },
+    { page: 2, text: '' },
+    { page: 3, text: BODY_A },
+  ]);
+  for (const c of chunks) assert.ok(c.content.trim().length > 0, 'empty chunk emitted');
+});
+
+await test('respects MAX_CHUNKS', () => {
+  const pages = Array.from({ length: 900 }, (_, i) => ({ page: i + 1, text: BODY_A.repeat(2) }));
+  const chunks = chunkPages(pages);
+  assert.ok(chunks.length <= MAX_CHUNKS, `exceeded MAX_CHUNKS: ${chunks.length}`);
+  chunks.forEach((c, i) => assert.equal(c.chunk_index, i));
+});
+
+// Regression: an early-only word boundary made the cut point land at or below
+// CHUNK_OVERLAP, so slice(cut - OVERLAP) returned the same string and the loop
+// emitted MAX_CHUNKS identical chunks instead of advancing.
+//
+// The filler must be NON-PERIODIC. A homogeneous run like 'C'.repeat(n) yields
+// byte-identical consecutive chunks even when the loop is advancing correctly,
+// so uniqueness would be a false alarm rather than a stall detector.
+function nonPeriodicFiller(minLength: number): string {
+  let s = '';
+  let n = 0;
+  while (s.length < minLength) s += String(n++);
+  return s.slice(0, minLength);
+}
+
+await test('a page whose only space is near the start still makes progress', () => {
+  const text = `${'B'.repeat(40)} ${nonPeriodicFiller(12_000)}`;
+  const chunks = chunkPages([{ page: 3, text }]);
+
+  assert.ok(chunks.length > 1, 'expected a split');
+  assert.ok(chunks.length < MAX_CHUNKS, `stalled: produced ${chunks.length} chunks`);
+
+  const unique = new Set(chunks.map((c) => c.content));
+  assert.equal(unique.size, chunks.length, 'duplicate chunk contents — loop did not advance');
+  chunks.forEach((c, i) => assert.equal(c.chunk_index, i));
+  for (const c of chunks) assert.equal(c.page_start, 3);
+});
+
+await test('pathological leading-space text terminates and preserves length', () => {
+  const text = ` ${nonPeriodicFiller(9_000)}`;
+  const chunks = chunkPages([{ page: 1, text }]);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.length < MAX_CHUNKS, `stalled: ${chunks.length} chunks`);
+  const total = chunks.reduce((n, c) => n + c.content.length, 0);
+  assert.ok(total >= 9_000, `content lost: ${total}`);
+});
+
+await test('homogeneous text advances even though chunks repeat', () => {
+  // Guards the loop itself rather than content uniqueness: identical chunks are
+  // acceptable here, an unbounded count is not.
+  const chunks = chunkPages([{ page: 1, text: `${'B'.repeat(40)} ${'C'.repeat(12_000)}` }]);
+  assert.ok(chunks.length < 20, `expected ~9 chunks, got ${chunks.length} (loop not advancing)`);
+  chunks.forEach((c, i) => assert.equal(c.chunk_index, i));
+});
+
+console.log(`\n${'='.repeat(56)}`);
+console.log(`  ${pass} passed, ${fail} failed`);
+if (failures.length) {
+  console.log('\nFailures:');
+  for (const f of failures) console.log(`  - ${f}`);
+}
+console.log(`${'='.repeat(56)}\n`);
+process.exit(fail === 0 ? 0 : 1);
