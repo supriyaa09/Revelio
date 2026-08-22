@@ -7,7 +7,7 @@
 - Last updated: 2026-08-23
 - Project name: **Revelio**
 - Current phase: **Phase 3 implemented** (extraction, OCR, AI, chunks). Phase 4 (search) is next.
-- Overall status: Typechecks, builds (11 routes), 75/75 processing tests pass; `0001`–`0007` applied, **`0008` pending**
+- Overall status: Typechecks, builds (11 routes), **132/132 tests pass** (75 processing + 57 search); `0001`–`0007` applied, **`0008` pending**
 - Selected problem: FS-05 Document Management
 - Product shape: **ONE web application** (intelligent workspace + institutional governance)
 - Roles: **`student`, `faculty`, `hod`** — three only, no admin
@@ -19,6 +19,53 @@
 ---
 
 ## Change Log
+
+### 2026-08-23 — Merge `sohail-feature` + `sohail-AG` into `sohail-integration`
+
+#### Change
+
+Integration merge. `sohail-AG` contributed **Smart Search** (`lib/search/parse.ts`, `lib/search/query.ts`, an enhanced `search/page.tsx`, and `scripts/test-search.mts` — 57 tests). It also contained its own independently-developed copy of the auto-start / migration `0008` / endpoint-security work, which is what produced the conflicts.
+
+**Conflicts and how each was resolved** — seven files, `UU` in all cases:
+
+| File | Resolution | Why |
+| --- | --- | --- |
+| `processing/analyze.ts` | **HEAD** | `sohail-AG` held the earlier form of the same feature: an inline `resolveBaseUrl` and an inline SDK call. HEAD had already moved both into `providers.ts` behind `sendMessages()` and added the AgentRouter provider. Every AG-only line was superseded phrasing, not lost behaviour — checked line by line, not assumed |
+| `scripts/probe-ai.mts` | **HEAD** | AG's version reported only the endpoint; HEAD's also reports provider, model and credential **source** |
+| `scripts/test-processing.mts` | **HEAD** | AG's endpoint tests called `resolveBaseUrl()` expecting a **string**; it now returns `{ baseUrl, source }`. Keeping AG's would not have compiled. HEAD has the same six tests, updated, plus 26 more. AG's search tests were never at risk — they live in a separate new file |
+| `.env.example` | **HEAD** | AG's AI section predates the provider variables. HEAD documents `REVELIO_AI_PROVIDER`, all four `REVELIO_AGENTROUTER_*` variables **and** the base-URL override rules AG documented |
+| `package.json` | **union** | The only difference was AG's `test:search`. Added to HEAD's script list next to `test:processing`; dependencies and devDependencies were byte-identical, so nothing to reconcile |
+| `docs/decisions.md` | **HEAD** | One hunk, and AG's side of it was empty. AG introduced no new ADR, so ADR-042 (AgentRouter) is kept and AG's edits elsewhere in the file had already merged cleanly |
+| `docs/current-changes.md` | **HEAD** + this entry | AG's side was empty for the changelog hunk and stale for the two status hunks — it still listed "no `ANTHROPIC_API_KEY` is set" as a blocker, which a verified live analysis has since disproved |
+
+Every conflict resolved to HEAD because in each case AG's side was an **earlier iteration of the same work**, never a distinct feature. AG's actual unique contribution — Smart Search — arrived as new files and staged without conflict.
+
+**Nothing was dropped.** AgentRouter support, the Claude processing pipeline, pipeline auto-start, migration `0008`, endpoint security, Smart Search, and both test suites are all present.
+
+#### Deviation worth flagging
+
+`sohail-AG` shipped Smart Search with no changelog entry and no ADR, so the merge inherited an undocumented feature. This entry records its arrival, but the search design decisions — how the query parser resolves filters, ranking behaviour — remain undocumented by whoever wrote them. Worth an ADR before the work is graded.
+
+#### Verification status
+
+| Item | Status |
+| --- | --- |
+| Conflict markers anywhere in the tree | **None** — grepped across `docs/`, `frontend/src/`, `frontend/scripts/` |
+| `npm run typecheck` | **Passes**, zero errors |
+| `npm run build` | **Passes**, 11 routes |
+| `npm run test:processing` | **75 passed, 0 failed** |
+| `npm run test:search` | **57 passed, 0 failed** |
+| Combined | **132 passed, 0 failed** |
+| Merge committed | **NO — staged only, deliberately left uncommitted** |
+| `0008_processing_access.sql` applied | **NO — still pending** |
+
+#### Status
+
+- [x] Planned
+- [x] Implemented
+- [x] Tested — 132/132 across both suites, typecheck and build
+- [ ] Deployed
+
 
 ### 2026-08-23 — AgentRouter as a first-class AI provider; first verified live analysis
 

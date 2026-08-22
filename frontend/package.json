@@ -10,11 +10,12 @@
     "typecheck": "tsc --noEmit",
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
     "test:processing": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-processing.mts",
+    "test:search": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-search.mts",
     "probe:schema": "node scripts/probe-schema.mjs",
     "probe:grants": "node scripts/probe-grants.mjs",
     "probe:ai": "node --env-file-if-exists=.env.local --experimental-strip-types --import ./scripts/register-hook.mjs scripts/probe-ai.mts",
-    "diagnose:upload": "node scripts/diagnose-upload.mjs",
-    "probe:processing": "node scripts/probe-processing.mjs"
+    "probe:processing": "node scripts/probe-processing.mjs",
+    "diagnose:upload": "node scripts/diagnose-upload.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
