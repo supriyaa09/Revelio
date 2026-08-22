@@ -1,0 +1,354 @@
+import Link from 'next/link';
+import { notFound } from 'next/navigation';
+import { ArrowLeft, Download, FileText, History, MessageSquare, ShieldCheck } from 'lucide-react';
+import { requireSession } from '@/lib/auth';
+import { createClient } from '@/lib/supabase/server';
+import { SIGNED_URL_TTL, STORAGE_BUCKET, canReview } from '@/lib/constants';
+import { ProcessingBadge, StatusBadge } from '@/components/badges';
+import { formatBytes, formatDateTime } from '@/components/ui';
+import { WorkflowActions } from '@/components/workflow-actions';
+import { CommentForm } from '@/components/comment-form';
+import type { AuditEntry, DocumentVersion, ReviewEntry } from '@/lib/types';
+
+export default async function DocumentDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const { profile } = await requireSession();
+  const supabase = await createClient();
+
+  const { data: doc } = await supabase
+    .from('documents')
+    .select(
+      `id, title, description, owner_id, workflow_status, current_version_id,
+       category_source, category_confidence, document_type, document_date, tags,
+       system_metadata, created_at, updated_at,
+       category:categories!documents_category_id_fkey (id, name),
+       department:departments!documents_department_id_fkey (id, name),
+       owner:profiles!documents_owner_id_fkey (id, full_name)`,
+    )
+    .eq('id', id)
+    .maybeSingle();
+
+  // RLS makes an unauthorized document indistinguishable from a missing one,
+  // which is what we want — existence is not leaked.
+  if (!doc) notFound();
+
+  const [{ data: versions }, { data: comments }, { data: reviews }, { data: audit }] =
+    await Promise.all([
+      supabase
+        .from('document_versions')
+        .select(
+          `id, document_id, version_number, storage_path, original_filename, mime_type,
+           file_size, uploaded_by, change_note, processing_status, processing_error,
+           extraction_method, page_count, char_count, created_at, processed_at,
+           uploader:profiles!document_versions_uploaded_by_fkey (id, full_name)`,
+        )
+        .eq('document_id', id)
+        .order('version_number', { ascending: false }),
+      supabase
+        .from('document_comments')
+        .select(`id, body, created_at, author:profiles!document_comments_author_id_fkey (id, full_name)`)
+        .eq('document_id', id)
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('document_reviews')
+        .select(
+          `id, document_id, reviewer_id, action, from_state, to_state, comment, created_at,
+           reviewer:profiles!document_reviews_reviewer_id_fkey (id, full_name)`,
+        )
+        .eq('document_id', id)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('audit_logs')
+        .select(
+          `id, actor_id, document_id, action, from_state, to_state, metadata, created_at,
+           actor:profiles!audit_logs_actor_id_fkey (id, full_name)`,
+        )
+        .eq('document_id', id)
+        .order('created_at', { ascending: false })
+        .limit(50),
+    ]);
+
+  const allVersions = (versions ?? []) as unknown as (DocumentVersion & {
+    uploader: { id: string; full_name: string } | null;
+  })[];
+  const current = allVersions.find((v) => v.id === doc.current_version_id) ?? allVersions[0];
+
+  // Short-lived signed URL — the bucket is private and never serves public URLs.
+  let fileUrl: string | null = null;
+  if (current) {
+    const { data: signed } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .createSignedUrl(current.storage_path, SIGNED_URL_TTL);
+    fileUrl = signed?.signedUrl ?? null;
+  }
+
+  const isOwner = doc.owner_id === profile.id;
+  const classification = (doc.system_metadata as Record<string, any>)?.classification;
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <Link
+        href="/workspace"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+      >
+        <ArrowLeft className="size-4" />
+        Workspace
+      </Link>
+
+      {/* Header */}
+      <header className="mt-3 flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">{doc.title}</h1>
+            <StatusBadge state={doc.workflow_status} />
+            {current && <ProcessingBadge state={current.processing_status} />}
+          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            {(doc.department as any)?.name && (doc.category as any)?.name
+              ? `${(doc.department as any).name} / ${(doc.category as any).name}`
+              : 'Unfiled'}{' '}
+            · {(doc.owner as any)?.full_name ?? 'Unknown'} · updated {formatDateTime(doc.updated_at)}
+          </p>
+        </div>
+
+        {fileUrl && (
+          <a href={fileUrl} target="_blank" rel="noreferrer" className="btn-secondary">
+            <Download className="size-4" />
+            Download
+          </a>
+        )}
+      </header>
+
+      <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="space-y-6">
+          {/* Metadata */}
+          <section className="card p-5">
+            <h2 className="font-medium">Metadata</h2>
+            <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+              <Field label="Document type" value={doc.document_type} />
+              <Field label="Document date" value={doc.document_date} />
+              <Field
+                label="Folder"
+                value={
+                  (doc.category as any)?.name
+                    ? `${(doc.department as any)?.name} / ${(doc.category as any).name}`
+                    : null
+                }
+                badge={
+                  doc.category_source === 'system'
+                    ? 'System'
+                    : doc.category_source === 'user'
+                      ? 'User'
+                      : 'AI'
+                }
+              />
+              <Field label="Tags" value={doc.tags?.length ? doc.tags.join(', ') : null} />
+              <Field label="Created" value={formatDateTime(doc.created_at)} />
+              <Field label="Description" value={doc.description} />
+            </dl>
+
+            {classification?.method === 'keyword' && (
+              <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                <strong>Auto-filed</strong> by keyword match on{' '}
+                {classification.basis === 'title_and_filename'
+                  ? 'title and filename'
+                  : 'document text'}
+                {classification.matched_terms?.length
+                  ? `: ${classification.matched_terms.join(', ')}`
+                  : ''}
+                {doc.category_confidence != null &&
+                  ` · confidence ${Math.round(doc.category_confidence * 100)}%`}
+              </p>
+            )}
+          </section>
+
+          {/* Extraction / intelligence status — honest about what has run. */}
+          <section className="card p-5">
+            <h2 className="font-medium">Document intelligence</h2>
+            {current?.processing_status === 'completed' ? (
+              <p className="mt-2 text-sm text-slate-600">
+                Text extracted ({current.char_count.toLocaleString()} characters
+                {current.extraction_method ? `, via ${current.extraction_method}` : ''}).
+              </p>
+            ) : current?.processing_status === 'failed' ? (
+              <p className="mt-2 text-sm text-red-700">
+                Processing failed: {current.processing_error ?? 'unknown error'}
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-slate-500">
+                Text extraction, OCR fallback, summaries and Q&amp;A are not enabled yet. The file is
+                stored and organized; intelligence features arrive in the next phase.
+              </p>
+            )}
+          </section>
+
+          {/* Preview */}
+          {fileUrl && current?.mime_type === 'application/pdf' && (
+            <section className="card overflow-hidden">
+              <h2 className="border-b border-slate-200 px-5 py-3 font-medium">Preview</h2>
+              <iframe src={fileUrl} title="Document preview" className="h-[600px] w-full" />
+            </section>
+          )}
+          {fileUrl && current?.mime_type.startsWith('image/') && (
+            <section className="card overflow-hidden">
+              <h2 className="border-b border-slate-200 px-5 py-3 font-medium">Preview</h2>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={fileUrl} alt={doc.title} className="max-h-[600px] w-full object-contain" />
+            </section>
+          )}
+
+          {/* Comments */}
+          <section className="card p-5">
+            <h2 className="flex items-center gap-2 font-medium">
+              <MessageSquare className="size-4 text-slate-400" />
+              Comments
+            </h2>
+            <ul className="mt-3 space-y-3">
+              {(comments ?? []).length === 0 && (
+                <li className="text-sm text-slate-500">No comments yet.</li>
+              )}
+              {(comments ?? []).map((c: any) => (
+                <li key={c.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-medium">{c.author?.full_name ?? 'Unknown'}</span>
+                    <span className="text-xs text-slate-500">{formatDateTime(c.created_at)}</span>
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{c.body}</p>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4">
+              <CommentForm documentId={doc.id} />
+            </div>
+          </section>
+        </div>
+
+        {/* Sidebar */}
+        <aside className="space-y-6">
+          <WorkflowActions
+            documentId={doc.id}
+            status={doc.workflow_status}
+            isOwner={isOwner}
+            role={profile.role}
+            hasVersion={Boolean(doc.current_version_id)}
+          />
+
+          {/* Version history */}
+          <section className="card p-5">
+            <h2 className="flex items-center gap-2 font-medium">
+              <History className="size-4 text-slate-400" />
+              Versions
+            </h2>
+            <ol className="mt-3 space-y-3">
+              {allVersions.map((v) => (
+                <li key={v.id} className="text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">v{v.version_number}</span>
+                    {v.id === doc.current_version_id && (
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">
+                        current
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    <div className="truncate">{v.original_filename}</div>
+                    <div>
+                      {formatBytes(v.file_size)} · {v.uploader?.full_name ?? 'Unknown'} ·{' '}
+                      {formatDateTime(v.created_at)}
+                    </div>
+                    {v.change_note && <div className="mt-0.5 italic">“{v.change_note}”</div>}
+                  </div>
+                </li>
+              ))}
+              {allVersions.length === 0 && <li className="text-sm text-slate-500">No versions.</li>}
+            </ol>
+          </section>
+
+          {/* Review decisions */}
+          {(reviews ?? []).length > 0 && (
+            <section className="card p-5">
+              <h2 className="flex items-center gap-2 font-medium">
+                <ShieldCheck className="size-4 text-slate-400" />
+                Review history
+              </h2>
+              <ol className="mt-3 space-y-3">
+                {((reviews ?? []) as unknown as (ReviewEntry & {
+                  reviewer: { full_name: string } | null;
+                })[]).map((r) => (
+                  <li key={r.id} className="text-sm">
+                    <div className="font-medium">{r.action.replace(/_/g, ' ')}</div>
+                    <div className="text-xs text-slate-500">
+                      {r.reviewer?.full_name ?? 'Unknown'} · {formatDateTime(r.created_at)}
+                    </div>
+                    {r.comment && (
+                      <p className="mt-1 rounded bg-slate-50 px-2 py-1 text-xs text-slate-700">
+                        {r.comment}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
+          {/* Audit trail — real rows, written by the database */}
+          <section className="card p-5">
+            <h2 className="flex items-center gap-2 font-medium">
+              <FileText className="size-4 text-slate-400" />
+              Audit history
+            </h2>
+            <ol className="mt-3 space-y-2">
+              {((audit ?? []) as unknown as AuditEntry[]).map((a) => (
+                <li key={a.id} className="text-xs">
+                  <span className="font-medium text-slate-700">{a.action.replace(/_/g, ' ')}</span>
+                  {a.from_state && a.to_state && (
+                    <span className="text-slate-500">
+                      {' '}
+                      · {a.from_state} → {a.to_state}
+                    </span>
+                  )}
+                  <div className="text-slate-500">
+                    {(a as any).actor?.full_name ?? 'System'} · {formatDateTime(a.created_at)}
+                  </div>
+                </li>
+              ))}
+              {(audit ?? []).length === 0 && (
+                <li className="text-sm text-slate-500">No audit events.</li>
+              )}
+            </ol>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  badge,
+}: {
+  label: string;
+  value: string | null | undefined;
+  badge?: string;
+}) {
+  return (
+    <div>
+      <dt className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+        {label}
+        {badge && value && (
+          <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium normal-case text-slate-600">
+            {badge}
+          </span>
+        )}
+      </dt>
+      <dd className="mt-0.5 text-sm text-slate-900">
+        {value || <span className="text-slate-400">Not set</span>}
+      </dd>
+    </div>
+  );
+}

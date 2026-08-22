@@ -1,0 +1,64 @@
+import type { AppRole, ProcessingState, WorkflowState } from './types';
+
+/** Hard limits, mirrored in the database CHECK constraints and bucket config. */
+export const MAX_FILE_BYTES = 26_214_400; // 25 MB
+export const ALLOWED_MIME_TYPES = ['application/pdf', 'image/png', 'image/jpeg'] as const;
+export const STORAGE_BUCKET = 'documents';
+
+/** Seconds a signed download URL stays valid. */
+export const SIGNED_URL_TTL = 300;
+
+export const WORKFLOW_LABELS: Record<WorkflowState, string> = {
+  draft: 'Draft',
+  submitted: 'Submitted',
+  under_review: 'Under review',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  changes_requested: 'Changes requested',
+};
+
+/** Tailwind classes per state. Kept here so badges stay consistent everywhere. */
+export const WORKFLOW_STYLES: Record<WorkflowState, string> = {
+  draft: 'bg-slate-100 text-slate-700 ring-slate-200',
+  submitted: 'bg-blue-50 text-blue-700 ring-blue-200',
+  under_review: 'bg-amber-50 text-amber-700 ring-amber-200',
+  approved: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  rejected: 'bg-red-50 text-red-700 ring-red-200',
+  changes_requested: 'bg-orange-50 text-orange-700 ring-orange-200',
+};
+
+export const PROCESSING_LABELS: Record<ProcessingState, string> = {
+  pending: 'Queued',
+  processing: 'Processing',
+  completed: 'Processed',
+  failed: 'Failed',
+};
+
+export const ROLE_LABELS: Record<AppRole, string> = {
+  staff: 'Staff',
+  reviewer: 'Reviewer',
+  approver: 'Approver / HOD',
+  admin: 'Administrator',
+};
+
+/** Mirrors is_valid_transition() in 0002_security.sql. UI convenience only —
+ *  the database remains the enforcement point. */
+export const ALLOWED_TRANSITIONS: Record<WorkflowState, WorkflowState[]> = {
+  draft: ['submitted'],
+  submitted: ['under_review', 'draft'],
+  under_review: ['approved', 'rejected', 'changes_requested'],
+  approved: [],
+  rejected: ['draft'],
+  changes_requested: ['submitted'],
+};
+
+export function canReview(role: AppRole): boolean {
+  return role === 'reviewer' || role === 'approver' || role === 'admin';
+}
+
+export function canApprove(role: AppRole): boolean {
+  return role === 'approver' || role === 'admin';
+}
+
+/** States that appear in the reviewer queue. */
+export const REVIEW_QUEUE_STATES: WorkflowState[] = ['submitted', 'under_review'];
