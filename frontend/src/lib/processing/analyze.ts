@@ -1,4 +1,26 @@
 import type { Category, Department } from '@/lib/types';
+import {
+  callAgentRouter,
+  resolveProvider,
+  type MessagesResponse,
+  type ProviderConfig,
+} from './providers';
+
+// Endpoint resolution and provider transport live in ./providers. Re-exported
+// here because this module is the public face of the AI layer, and callers
+// (tests, probe-ai) should not need to know which file the plumbing sits in.
+export {
+  ANTHROPIC_DEFAULT_BASE_URL,
+  AGENTROUTER_DEFAULT_BASE_URL,
+  AGENTROUTER_DEFAULT_MODEL,
+  AGENTROUTER_DEFAULT_USER_AGENT,
+  resolveProvider,
+  resolveProviderName,
+  resolveAnthropicBaseUrl as resolveBaseUrl,
+  __resetProviderWarning as __resetBaseUrlWarning,
+  type AiProviderName,
+  type ProviderConfig,
+} from './providers';
 
 // ANTHROPIC_API_KEY is server-side only and is never prefixed NEXT_PUBLIC_, so
 // it would simply be undefined in a browser bundle — the call would fail with
@@ -72,8 +94,11 @@ export async function analyseDocument(input: {
   departments: Pick<Department, 'slug' | 'name'>[];
   categories: (Pick<Category, 'slug' | 'name' | 'description'> & { department_slug: string })[];
 }): Promise<AiOutcome> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  // Endpoint, model, headers and credential in one place. See ./providers:
+  // REVELIO_AI_PROVIDER selects anthropic (default) or agentrouter.
+  const config = resolveProvider();
+
+  if (!config.apiKey) {
     return { ok: false, analysis: null, model: null, reason: 'NO_API_KEY' };
   }
 
@@ -82,18 +107,14 @@ export async function analyseDocument(input: {
     return { ok: false, analysis: null, model: null, reason: 'NO_TEXT' };
   }
 
-  const model = process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
-
-  // The Anthropic SDK silently honours ANTHROPIC_BASE_URL. On a document
-  // platform that means institutional document text could be routed to a third
-  // party without anyone choosing it in code, so say so once per process. The
-  // override is respected — it is deliberate for gateways and proxies — but it
-  // is never invisible.
-  warnOnNonDefaultBaseUrl();
+  const model = config.model;
 
   const taxonomy = input.categories
     .map((c) => `- ${c.department_slug}/${c.slug} — ${c.name}${c.description ? `: ${c.description}` : ''}`)
     .join('\n');
+
+  const departmentSlugs = input.departments.map((d) => d.slug);
+  const categorySlugs = input.categories.map((c) => c.slug);
 
   const system = [
     'You analyse institutional documents and return structured metadata.',
@@ -109,6 +130,14 @@ export async function analyseDocument(input: {
     '',
     'Allowed department/category pairs:',
     taxonomy || '(none configured)',
+    // AgentRouter accepts output_config and then IGNORES it — verified: it
+    // returned fenced markdown with invented keys (reference_number,
+    // issuing_office) while answering 200. So on that provider the contract has
+    // to be stated in the prompt, because nothing is enforcing it server-side.
+    // Anthropic's path is left exactly as it was; the schema does the work there.
+    ...(config.provider === 'agentrouter'
+      ? ['', jsonContractInstruction(departmentSlugs, categorySlugs)]
+      : []),
   ].join('\n');
 
   const userMessage = [
@@ -121,24 +150,24 @@ export async function analyseDocument(input: {
     '"""',
   ].join('\n');
 
-  const schema = buildAnalysisSchema(
-    input.departments.map((d) => d.slug),
-    input.categories.map((c) => c.slug),
-  );
+  const schema = buildAnalysisSchema(departmentSlugs, categorySlugs);
+
+  // Built once and sent byte-identically by both providers. `output_config` and
+  // `thinking` are kept for AgentRouter even though it ignores the former: both
+  // are accepted (200), and sending them means the provider automatically gets
+  // real schema enforcement if the gateway ever implements it.
+  const requestBody = {
+    model,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    // No temperature: sampling parameters are rejected on Claude Opus 5.
+    thinking: { type: 'adaptive' },
+    output_config: { effort: ANALYSIS_EFFORT, format: { type: 'json_schema', schema } },
+    system,
+    messages: [{ role: 'user', content: userMessage }],
+  };
 
   try {
-    const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey });
-
-    const response = await client.messages.create({
-      model,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      // No temperature: sampling parameters are rejected on Claude Opus 5.
-      thinking: { type: 'adaptive' },
-      output_config: { effort: ANALYSIS_EFFORT, format: { type: 'json_schema', schema } },
-      system,
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const response = await sendMessages(config, requestBody);
 
     // A safety refusal is a real outcome, not a malformed one. Reporting it
     // distinctly keeps the pipeline honest: it degrades to the deterministic
@@ -165,14 +194,16 @@ export async function analyseDocument(input: {
       };
     }
 
-    const raw = response.content.find((b) => b.type === 'text')?.text;
+    // Both providers return thinking blocks before the answer, so find the text
+    // block rather than assuming content[0].
+    const raw = response.content?.find((b) => b.type === 'text')?.text;
     if (!raw) {
       return { ok: false, analysis: null, model, reason: 'MALFORMED_OUTPUT', detail: 'empty response' };
     }
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(extractJsonObject(raw));
     } catch {
       return {
         ok: false,
@@ -278,6 +309,128 @@ export function buildAnalysisSchema(
   };
 }
 
+/**
+ * Sends one Messages request through the selected provider.
+ *
+ * This is the only place the two providers differ. Everything above it — the
+ * system prompt, the JSON schema, the taxonomy enum — and everything below it —
+ * refusal handling, truncation handling, `JSON.parse`, `coerce()` — is shared,
+ * so adding a provider cannot change what "analysis" means.
+ *
+ * The Anthropic branch is unchanged: the SDK, with `baseURL` passed explicitly
+ * so it cannot read `ANTHROPIC_BASE_URL` from the ambient environment.
+ */
+async function sendMessages(
+  config: ProviderConfig,
+  body: Record<string, unknown>,
+): Promise<MessagesResponse> {
+  if (config.provider === 'agentrouter') {
+    return callAgentRouter(config, body);
+  }
+
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: config.apiKey ?? undefined, baseURL: config.baseUrl });
+
+  // One cast at one boundary, deliberately. The payload is shared with the
+  // AgentRouter transport, which takes a plain object; binding here avoids
+  // maintaining a second copy of the request that could silently drift out of
+  // step with this one. `messages.create` is also overloaded for streaming,
+  // which makes a parameter-type cast noisier than this.
+  const create = client.messages.create.bind(client.messages) as unknown as (
+    params: Record<string, unknown>,
+  ) => Promise<MessagesResponse>;
+
+  return create(body);
+}
+
+/**
+ * The response contract, stated in the prompt.
+ *
+ * Only used for providers that accept `output_config` without honouring it.
+ * It mirrors `buildAnalysisSchema()` deliberately: two statements of one
+ * contract is a maintenance risk, but the alternative is a provider that returns
+ * a differently-shaped object every call. `coerce()` still normalises whatever
+ * arrives, and `pipeline.ts` still resolves slugs against the database, so this
+ * improves the hit rate — it is not what makes the output safe.
+ */
+export function jsonContractInstruction(
+  departmentSlugs: string[],
+  categorySlugs: string[],
+): string {
+  const list = (slugs: string[]) => {
+    const unique = [...new Set(slugs.filter((s) => typeof s === 'string' && s.length > 0))];
+    return unique.length > 0 ? unique.map((s) => JSON.stringify(s)).join(', ') : '(none configured)';
+  };
+
+  return [
+    'OUTPUT FORMAT — this is strict:',
+    'Return ONE JSON object and nothing else. No markdown code fences, no prose',
+    'before or after, no explanation, and no keys beyond the ten listed here.',
+    '',
+    'Exactly these keys, all of them required, using null for anything the',
+    'document does not state:',
+    '  "document_type":    string | null',
+    `  "department_slug":  one of [${list(departmentSlugs)}] | null`,
+    `  "category_slug":    one of [${list(categorySlugs)}] | null`,
+    '  "tags":             array of strings (may be empty)',
+    '  "summary":          string | null',
+    '  "key_points":       array of strings (may be empty)',
+    '  "entities":         array of { "name": string, "type": string }',
+    '  "important_dates":  array of { "label": string, "date": "YYYY-MM-DD", "is_deadline": boolean }',
+    '  "document_date":    "YYYY-MM-DD" | null',
+    '  "confidence":       number between 0 and 1',
+  ].join('\n');
+}
+
+/**
+ * Pulls the JSON object out of a model response.
+ *
+ * Applied to both providers because it cannot change behaviour when the response
+ * is already bare JSON — `JSON.parse` would have accepted it unchanged. It only
+ * matters when a provider that is not enforcing a schema wraps the object in
+ * ```json fences or adds a sentence around it, which AgentRouter does.
+ *
+ * Brace matching is string-aware: a `}` inside a summary must not be mistaken
+ * for the end of the object.
+ */
+export function extractJsonObject(raw: string): string {
+  let text = raw.trim();
+
+  // Strip a fenced block, with or without a language tag.
+  const fenced = /^```(?:json|JSON)?\s*\n([\s\S]*?)\n?```$/.exec(text);
+  if (fenced?.[1]) text = fenced[1].trim();
+
+  if (text.startsWith('{') && text.endsWith('}')) return text;
+
+  const start = text.indexOf('{');
+  if (start === -1) return text;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+
+  // Unbalanced — hand back the remainder so the caller reports the real content.
+  return text.slice(start);
+}
+
 /** Keeps a provider error actionable in the server log without leaking the key. */
 function describeError(error: unknown): string {
   if (error instanceof Error) {
@@ -287,17 +440,6 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-let baseUrlWarned = false;
-
-function warnOnNonDefaultBaseUrl(): void {
-  const base = process.env.ANTHROPIC_BASE_URL;
-  if (!base || baseUrlWarned) return;
-  baseUrlWarned = true;
-  console.warn(
-    `[analyze] ANTHROPIC_BASE_URL is set to ${base}. Document text will be sent ` +
-      'there instead of to api.anthropic.com. Unset it to call Anthropic directly.',
-  );
-}
 
 /**
  * Defensive normalisation. A schema-constrained response is still untrusted

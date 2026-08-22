@@ -103,6 +103,14 @@ export default async function DocumentDetailPage({
   const classification = (doc.system_metadata as Record<string, any>)?.classification;
   const insight = (insights ?? null) as DocumentInsights | null;
 
+  // Mirrors document_is_visible() in the database, which 0008 made the single
+  // predicate behind can_process_version(). Written out rather than hardcoded to
+  // `true`: reaching this line already implies visibility (RLS returned the row
+  // using the same rule), but stating the rule keeps the client honest if the
+  // policy ever changes, and keeps the button from promising something the
+  // database would then refuse.
+  const canProcess = isOwner || (canReview(profile.role) && doc.workflow_status !== 'draft');
+
   return (
     <div className="mx-auto max-w-5xl">
       <Link
@@ -353,7 +361,7 @@ export default async function DocumentDetailPage({
               initialStatus={current.processing_status}
               initialStage={current.processing_stage}
               initialError={current.processing_error}
-              canProcess={isOwner || profile.role === 'hod'}
+              canProcess={canProcess}
             />
           )}
 

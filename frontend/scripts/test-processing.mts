@@ -22,7 +22,21 @@ import {
 } from '../src/lib/processing/extract.ts';
 import { ocrImage } from '../src/lib/processing/ocr.ts';
 import { chunkPages, CHUNK_CHARS, MAX_CHUNKS } from '../src/lib/processing/chunk.ts';
-import { analyseDocument, buildAnalysisSchema, coerce } from '../src/lib/processing/analyze.ts';
+import {
+  analyseDocument,
+  AGENTROUTER_DEFAULT_BASE_URL,
+  AGENTROUTER_DEFAULT_MODEL,
+  AGENTROUTER_DEFAULT_USER_AGENT,
+  ANTHROPIC_DEFAULT_BASE_URL,
+  buildAnalysisSchema,
+  coerce,
+  extractJsonObject,
+  jsonContractInstruction,
+  resolveBaseUrl,
+  resolveProvider,
+  resolveProviderName,
+  __resetBaseUrlWarning,
+} from '../src/lib/processing/analyze.ts';
 
 // ── PDF construction with a real xref table ─────────────────────────────────
 function buildPdf(objects: Buffer[]): Buffer {
@@ -705,6 +719,368 @@ await test('analyseDocument reports NO_TEXT before spending an API call', async 
 
 if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = savedKey;
+
+// ── 9. Endpoint resolution ──────────────────────────────────────────────────
+// These matter because the failure they guard against is silent: an inherited
+// ANTHROPIC_BASE_URL would forward institutional document text to a third party
+// with nothing in the code saying so. resolveBaseUrl takes its environment as a
+// parameter precisely so this is testable without mutating process.env.
+console.log('\n=== 9. Endpoint resolution (where document text is sent) ===');
+
+await test('no override resolves to Anthropic directly', () => {
+  __resetBaseUrlWarning();
+  const r = resolveBaseUrl({}, () => {});
+  assert.equal(r.baseUrl, ANTHROPIC_DEFAULT_BASE_URL);
+  assert.equal(r.source, 'default');
+});
+
+await test('an inherited base URL is IGNORED, not silently obeyed', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const r = resolveBaseUrl({ ANTHROPIC_BASE_URL: 'https://agentrouter.org' }, (m) => warnings.push(m));
+  assert.equal(
+    r.baseUrl,
+    ANTHROPIC_DEFAULT_BASE_URL,
+    'an unapproved third-party endpoint was accepted — document text would leak there',
+  );
+  assert.equal(r.source, 'default');
+  assert.deepEqual(r.ignored, { variable: 'ANTHROPIC_BASE_URL', value: 'https://agentrouter.org' });
+  assert.equal(warnings.length, 1, 'ignoring an override must be reported, never silent');
+  assert.match(warnings[0]!, /IGNORING/);
+  assert.match(warnings[0]!, /agentrouter\.org/, 'the warning must name the endpoint it refused');
+});
+
+await test('an explicitly permitted base URL is honoured', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const r = resolveBaseUrl(
+    {
+      ANTHROPIC_BASE_URL: 'https://gateway.internal.example',
+      ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: 'true',
+    },
+    (m) => warnings.push(m),
+  );
+  assert.equal(r.baseUrl, 'https://gateway.internal.example', 'a deliberate proxy must still work');
+  assert.equal(r.source, 'ANTHROPIC_BASE_URL');
+  assert.equal(r.ignored, undefined);
+  assert.equal(warnings.length, 1, 'using a proxy is worth one line in the log');
+});
+
+await test('the opt-in must be exactly true, not merely present', () => {
+  // 'false', '1', 'yes' and an empty value are all rejected. A half-set flag
+  // resolving to "allowed" is the failure mode worth guarding.
+  for (const value of ['false', '1', 'yes', '', 'TRUE ']) {
+    __resetBaseUrlWarning();
+    const r = resolveBaseUrl(
+      { ANTHROPIC_BASE_URL: 'https://proxy.example', ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: value },
+      () => {},
+    );
+    const expected = value.trim().toLowerCase() === 'true' ? 'https://proxy.example' : ANTHROPIC_DEFAULT_BASE_URL;
+    assert.equal(r.baseUrl, expected, `ANTHROPIC_ALLOW_BASE_URL_OVERRIDE=${JSON.stringify(value)}`);
+  }
+});
+
+await test('a blank base URL is treated as unset', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const r = resolveBaseUrl({ ANTHROPIC_BASE_URL: '   ' }, (m) => warnings.push(m));
+  assert.equal(r.baseUrl, ANTHROPIC_DEFAULT_BASE_URL);
+  assert.equal(r.source, 'default');
+  assert.equal(warnings.length, 0, 'an empty value is not a redirect and should not warn');
+});
+
+await test('the warning is emitted once per process, not once per document', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const env = { ANTHROPIC_BASE_URL: 'https://agentrouter.org' };
+  for (let i = 0; i < 5; i++) resolveBaseUrl(env, (m) => warnings.push(m));
+  assert.equal(warnings.length, 1, 'a per-document warning would flood the log during a batch');
+});
+
+// ── REVELIO_ANTHROPIC_BASE_URL: project-owned, self-authorising ─────────────
+await test('REVELIO_ANTHROPIC_BASE_URL is honoured without a second flag', () => {
+  // It cannot be inherited from an unrelated tool, so its presence IS the
+  // deliberate intent that ANTHROPIC_ALLOW_BASE_URL_OVERRIDE exists to extract.
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const r = resolveBaseUrl(
+    { REVELIO_ANTHROPIC_BASE_URL: 'https://co.agentrouter.org' },
+    (m) => warnings.push(m),
+  );
+  assert.equal(r.baseUrl, 'https://co.agentrouter.org');
+  assert.equal(r.source, 'REVELIO_ANTHROPIC_BASE_URL');
+  assert.equal(r.ignored, undefined);
+  assert.equal(warnings.length, 1, 'the destination must still be named in the log');
+  assert.match(warnings[0]!, /co\.agentrouter\.org/);
+});
+
+await test('REVELIO_ANTHROPIC_BASE_URL takes precedence over ANTHROPIC_BASE_URL', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const r = resolveBaseUrl(
+    {
+      REVELIO_ANTHROPIC_BASE_URL: 'https://co.agentrouter.org',
+      ANTHROPIC_BASE_URL: 'https://other.example',
+      ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: 'true',
+    },
+    (m) => warnings.push(m),
+  );
+  assert.equal(r.baseUrl, 'https://co.agentrouter.org', 'precedence must not depend on the opt-in flag');
+  assert.equal(r.source, 'REVELIO_ANTHROPIC_BASE_URL');
+  assert.match(warnings[0]!, /overrid/i, 'the shadowed variable should be reported');
+  assert.match(warnings[0]!, /other\.example/, 'and named, so a stale value is visible');
+});
+
+await test('ANTHROPIC_BASE_URL is the fallback when REVELIO_ is absent or blank', () => {
+  for (const revelio of [undefined, '', '   ']) {
+    __resetBaseUrlWarning();
+    const r = resolveBaseUrl(
+      {
+        REVELIO_ANTHROPIC_BASE_URL: revelio,
+        ANTHROPIC_BASE_URL: 'https://fallback.example',
+        ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: 'true',
+      },
+      () => {},
+    );
+    assert.equal(r.baseUrl, 'https://fallback.example', `REVELIO_=${JSON.stringify(revelio)}`);
+    assert.equal(r.source, 'ANTHROPIC_BASE_URL');
+  }
+});
+
+await test('a blank REVELIO_ does not resurrect an unapproved ANTHROPIC_BASE_URL', () => {
+  // Falling back must fall back to the *rule*, not just to the value.
+  __resetBaseUrlWarning();
+  const r = resolveBaseUrl(
+    { REVELIO_ANTHROPIC_BASE_URL: '  ', ANTHROPIC_BASE_URL: 'https://agentrouter.org' },
+    () => {},
+  );
+  assert.equal(r.baseUrl, ANTHROPIC_DEFAULT_BASE_URL, 'the opt-in requirement must survive the fallback');
+  assert.deepEqual(r.ignored, { variable: 'ANTHROPIC_BASE_URL', value: 'https://agentrouter.org' });
+});
+
+// ── 10. Provider selection and transport ────────────────────────────────────
+console.log('\n=== 10. Provider selection (anthropic | agentrouter) ===');
+
+const AR = 'https://agentrouter.org';
+
+await test('no REVELIO_AI_PROVIDER means anthropic', () => {
+  __resetBaseUrlWarning();
+  assert.equal(resolveProviderName({}, () => {}), 'anthropic');
+});
+
+await test('provider name is case-insensitive and trimmed', () => {
+  for (const v of ['agentrouter', 'AgentRouter', '  AGENTROUTER  ']) {
+    __resetBaseUrlWarning();
+    assert.equal(resolveProviderName({ REVELIO_AI_PROVIDER: v }, () => {}), 'agentrouter', v);
+  }
+});
+
+await test('an unknown provider degrades to anthropic and says so', () => {
+  // A typo must not take the pipeline down; it must fall back and be reported.
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  assert.equal(
+    resolveProviderName({ REVELIO_AI_PROVIDER: 'openai' }, (m) => warnings.push(m)),
+    'anthropic',
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /openai/);
+});
+
+await test('agentrouter defaults to the host that actually works', () => {
+  // co.agentrouter.org answers but 401s every credential; agentrouter.org is the
+  // verified host. Pinning the default is the point of this test.
+  __resetBaseUrlWarning();
+  const c = resolveProvider({ REVELIO_AI_PROVIDER: 'agentrouter', ANTHROPIC_API_KEY: 'k' }, () => {});
+  assert.equal(c.provider, 'agentrouter');
+  assert.equal(c.baseUrl, AGENTROUTER_DEFAULT_BASE_URL);
+  assert.equal(c.baseUrl, AR);
+  assert.equal(c.endpoint, `${AR}/v1/messages`);
+  assert.equal(c.model, AGENTROUTER_DEFAULT_MODEL);
+});
+
+await test('agentrouter sends the client identity the gateway demands', () => {
+  __resetBaseUrlWarning();
+  const c = resolveProvider({ REVELIO_AI_PROVIDER: 'agentrouter', ANTHROPIC_API_KEY: 'k' }, () => {});
+  assert.equal(c.headers['user-agent'], AGENTROUTER_DEFAULT_USER_AGENT);
+  assert.match(c.headers['user-agent']!, /claude-cli/, 'without this the gateway returns 401');
+  assert.equal(c.headers['x-app'], 'cli');
+});
+
+await test('the gateway user-agent is configurable, not hardcoded', () => {
+  __resetBaseUrlWarning();
+  const c = resolveProvider(
+    {
+      REVELIO_AI_PROVIDER: 'agentrouter',
+      ANTHROPIC_API_KEY: 'k',
+      REVELIO_AGENTROUTER_USER_AGENT: 'my-app/1.0',
+    },
+    () => {},
+  );
+  assert.equal(c.headers['user-agent'], 'my-app/1.0');
+});
+
+await test('agentrouter base URL and model are overridable', () => {
+  __resetBaseUrlWarning();
+  const c = resolveProvider(
+    {
+      REVELIO_AI_PROVIDER: 'agentrouter',
+      ANTHROPIC_API_KEY: 'k',
+      REVELIO_AGENTROUTER_BASE_URL: 'https://gw.example',
+      REVELIO_AGENTROUTER_MODEL: 'claude-opus-4-1',
+    },
+    () => {},
+  );
+  assert.equal(c.endpoint, 'https://gw.example/v1/messages');
+  assert.equal(c.model, 'claude-opus-4-1');
+});
+
+await test('a base URL given with a trailing slash or /v1 still builds one valid endpoint', () => {
+  // Pasting a URL from docs is how "/v1/v1/messages" happens.
+  for (const [base, expected] of [
+    ['https://gw.example/', 'https://gw.example/v1/messages'],
+    ['https://gw.example/v1', 'https://gw.example/v1/messages'],
+    ['https://gw.example/v1/', 'https://gw.example/v1/messages'],
+  ] as const) {
+    __resetBaseUrlWarning();
+    const c = resolveProvider(
+      { REVELIO_AI_PROVIDER: 'agentrouter', ANTHROPIC_API_KEY: 'k', REVELIO_AGENTROUTER_BASE_URL: base },
+      () => {},
+    );
+    assert.equal(c.endpoint, expected, base);
+  }
+});
+
+await test('the credential is read in a documented precedence order', () => {
+  const cases = [
+    [{ REVELIO_AGENTROUTER_API_KEY: 'a', ANTHROPIC_API_KEY: 'b', ANTHROPIC_AUTH_TOKEN: 'c' }, 'a', 'REVELIO_AGENTROUTER_API_KEY'],
+    [{ ANTHROPIC_API_KEY: 'b', ANTHROPIC_AUTH_TOKEN: 'c' }, 'b', 'ANTHROPIC_API_KEY'],
+    // ANTHROPIC_AUTH_TOKEN is where Claude-Code-style setups keep the router key.
+    [{ ANTHROPIC_AUTH_TOKEN: 'c' }, 'c', 'ANTHROPIC_AUTH_TOKEN'],
+  ] as const;
+  for (const [env, key, source] of cases) {
+    __resetBaseUrlWarning();
+    const c = resolveProvider({ REVELIO_AI_PROVIDER: 'agentrouter', ...env }, () => {});
+    assert.equal(c.apiKey, key);
+    assert.equal(c.apiKeySource, source);
+  }
+});
+
+await test('a missing credential is reported, not defaulted', () => {
+  __resetBaseUrlWarning();
+  const c = resolveProvider({ REVELIO_AI_PROVIDER: 'agentrouter' }, () => {});
+  assert.equal(c.apiKey, null);
+  assert.equal(c.apiKeySource, null);
+});
+
+await test('agentrouter ignores the Anthropic base-URL variables entirely', () => {
+  // They belong to the other provider. Leaking co.agentrouter.org in here is
+  // exactly the confusion this separation prevents.
+  __resetBaseUrlWarning();
+  const c = resolveProvider(
+    {
+      REVELIO_AI_PROVIDER: 'agentrouter',
+      ANTHROPIC_API_KEY: 'k',
+      REVELIO_ANTHROPIC_BASE_URL: 'https://co.agentrouter.org',
+      ANTHROPIC_BASE_URL: 'https://elsewhere.example',
+      ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: 'true',
+    },
+    () => {},
+  );
+  assert.equal(c.endpoint, `${AR}/v1/messages`);
+});
+
+await test('the anthropic provider is unaffected by the agentrouter variables', () => {
+  __resetBaseUrlWarning();
+  const c = resolveProvider(
+    {
+      ANTHROPIC_API_KEY: 'k',
+      REVELIO_AGENTROUTER_BASE_URL: 'https://gw.example',
+      REVELIO_AGENTROUTER_MODEL: 'something-else',
+    },
+    () => {},
+  );
+  assert.equal(c.provider, 'anthropic');
+  assert.equal(c.endpoint, `${ANTHROPIC_DEFAULT_BASE_URL}/v1/messages`);
+  assert.equal(c.headers['user-agent'], undefined, 'no spoofed identity on the direct path');
+  assert.equal(c.model, 'claude-opus-5');
+});
+
+// ── extractJsonObject: AgentRouter ignores output_config, so this carries load ─
+console.log('\n=== 11. Response unwrapping (unenforced schemas) ===');
+
+await test('bare JSON is returned unchanged', () => {
+  const s = '{"summary":"hi","n":1}';
+  assert.equal(extractJsonObject(s), s);
+});
+
+await test('a ```json fenced block is unwrapped', () => {
+  // This is the real AgentRouter response shape.
+  const inner = '{\n  "summary": "Budget approved",\n  "confidence": 0.9\n}';
+  assert.equal(extractJsonObject('```json\n' + inner + '\n```'), inner);
+  assert.equal(extractJsonObject('```\n' + inner + '\n```'), inner);
+  assert.deepEqual(JSON.parse(extractJsonObject('```json\n' + inner + '\n```')), {
+    summary: 'Budget approved',
+    confidence: 0.9,
+  });
+});
+
+await test('prose around the object is discarded', () => {
+  const out = extractJsonObject('Here is the analysis:\n{"summary":"x"}\nHope that helps!');
+  assert.deepEqual(JSON.parse(out), { summary: 'x' });
+});
+
+await test('a closing brace inside a string does not truncate the object', () => {
+  // The failure this prevents: a summary containing "}" cutting the JSON short.
+  const src = '{"summary":"see clause (b} of the circular","n":2}';
+  assert.deepEqual(JSON.parse(extractJsonObject(src)), {
+    summary: 'see clause (b} of the circular',
+    n: 2,
+  });
+});
+
+await test('an escaped quote does not confuse string tracking', () => {
+  const src = '{"summary":"the \\"final\\" date}","n":1}';
+  assert.deepEqual(JSON.parse(extractJsonObject(src)), { summary: 'the "final" date}', n: 1 });
+});
+
+await test('nested objects and arrays survive', () => {
+  const src =
+    'text before {"entities":[{"name":"A","type":"person"}],"d":{"x":{"y":1}}} text after';
+  assert.deepEqual(JSON.parse(extractJsonObject(src)), {
+    entities: [{ name: 'A', type: 'person' }],
+    d: { x: { y: 1 } },
+  });
+});
+
+await test('unbalanced input fails as MALFORMED rather than silently half-parsing', () => {
+  const out = extractJsonObject('{"summary":"truncated mid');
+  assert.throws(() => JSON.parse(out), 'truncated JSON must not parse into a partial object');
+});
+
+await test('no object at all is passed through for honest error reporting', () => {
+  assert.equal(extractJsonObject('I cannot help with that.'), 'I cannot help with that.');
+});
+
+await test('the prompt contract names the real taxonomy slugs', () => {
+  const s = jsonContractInstruction(['finance', 'academic'], ['budgets', 'notices']);
+  for (const slug of ['finance', 'academic', 'budgets', 'notices']) {
+    assert.match(s, new RegExp(`"${slug}"`), `${slug} must appear so the model can choose it`);
+  }
+  assert.match(s, /No markdown code fences/i);
+  // All ten keys must be listed, or the provider will omit some.
+  for (const key of [
+    'document_type', 'department_slug', 'category_slug', 'tags', 'summary',
+    'key_points', 'entities', 'important_dates', 'document_date', 'confidence',
+  ]) {
+    assert.match(s, new RegExp(`"${key}"`), `contract omits ${key}`);
+  }
+});
+
+await test('an empty taxonomy does not produce an empty bracket list', () => {
+  const s = jsonContractInstruction([], []);
+  assert.match(s, /\(none configured\)/);
+});
 
 console.log(`\n${'='.repeat(56)}`);
 console.log(`  ${pass} passed, ${fail} failed`);

@@ -9,7 +9,7 @@
  *
  *   npm run probe:ai
  */
-import { analyseDocument, DEFAULT_ANTHROPIC_MODEL } from '../src/lib/processing/analyze.ts';
+import { analyseDocument, resolveProvider } from '../src/lib/processing/analyze.ts';
 
 const DEPARTMENTS = [
   { slug: 'academic', name: 'Academic' },
@@ -63,17 +63,44 @@ This circular is issued with the approval of the Principal, Dr. Anitha Rao.
                                                         Registrar
 `.trim();
 
-const key = process.env.ANTHROPIC_API_KEY;
-const base = process.env.ANTHROPIC_BASE_URL;
-console.log(`\nANTHROPIC_API_KEY  ${key ? `present (${key.length} chars, prefix ${key.slice(0, 7)}…)` : 'ABSENT'}`);
-if (key && !key.startsWith('sk-ant-')) {
-  console.log('                   WARNING: an Anthropic API key starts with "sk-ant-".');
+// Report what will ACTUALLY be used — provider, endpoint, model, and which
+// variable supplied each. Printing the raw variables would misreport it, since
+// one can override another and one can be refused outright.
+const config = resolveProvider(process.env, (m) => console.log(`                   ${m}`));
+
+console.log(`\nprovider           ${config.provider}${config.provider === 'anthropic' ? '  (default)' : '  (REVELIO_AI_PROVIDER)'}`);
+console.log(
+  `ANTHROPIC_API_KEY  ${
+    config.apiKey
+      ? `present (${config.apiKey.length} chars, prefix ${config.apiKey.slice(0, 7)}…) from ${config.apiKeySource}`
+      : 'ABSENT'
+  }`,
+);
+if (config.apiKey && !config.apiKey.startsWith('sk-ant-') && config.provider === 'anthropic') {
+  console.log('                   NOTE: an Anthropic-issued key starts with "sk-ant-".');
 }
-console.log(`endpoint           ${base ?? 'https://api.anthropic.com (default)'}`);
-if (base) {
-  console.log('                   WARNING: ANTHROPIC_BASE_URL routes document text to a third party.');
+console.log(`endpoint           ${config.endpoint}`);
+console.log(`model              ${config.model}`);
+
+if (config.provider === 'agentrouter') {
+  console.log(`user-agent         ${config.headers['user-agent']}`);
+  console.log('                   (AgentRouter rejects requests from unrecognised clients)');
+} else {
+  console.log(
+    `chosen by          ${config.source === 'default' ? 'neither override — Anthropic direct' : config.source}`,
+  );
+  for (const name of ['REVELIO_ANTHROPIC_BASE_URL', 'ANTHROPIC_BASE_URL'] as const) {
+    const value = process.env[name]?.trim();
+    if (!value) continue;
+    const state =
+      config.source === name
+        ? 'IN USE'
+        : config.ignored?.variable === name
+          ? 'set but IGNORED (needs REVELIO_ANTHROPIC_BASE_URL or ANTHROPIC_ALLOW_BASE_URL_OVERRIDE=true)'
+          : 'set but overridden by REVELIO_ANTHROPIC_BASE_URL';
+    console.log(`  ${name.padEnd(26)} ${value}  -> ${state}`);
+  }
 }
-console.log(`model              ${process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL}`);
 console.log(`document           ${DOCUMENT.length} chars\n`);
 
 const started = Date.now();
