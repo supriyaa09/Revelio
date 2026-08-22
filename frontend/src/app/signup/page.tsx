@@ -27,7 +27,7 @@ export default function SignupPage() {
 
     const supabase = createClient();
     // full_name is passed as user metadata and read by the handle_new_user
-    // trigger. Role is never accepted from the client — it defaults to staff.
+    // trigger. Role is never accepted from the client — it defaults to student.
     const { data, error: authError } = await supabase.auth.signUp({
       email,
       password,
@@ -122,8 +122,8 @@ export default function SignupPage() {
           </button>
 
           <p className="text-xs text-slate-500">
-            New accounts start with the <strong>Staff</strong> role. An administrator assigns
-            reviewer or approver roles.
+            New accounts start with the <strong>Student</strong> role. Faculty and HOD roles are
+            assigned by the HOD.
           </p>
         </form>
 

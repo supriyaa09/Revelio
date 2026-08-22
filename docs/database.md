@@ -23,11 +23,11 @@ Enum-style values use PostgreSQL enums or `CHECK` constraints — never unvalida
 | --- | --- | --- |
 | `id` | uuid PK | References `auth.users(id)` ON DELETE CASCADE |
 | `full_name` | text | |
-| `role` | `app_role` | NOT NULL, default `staff` |
+| `role` | `app_role` | NOT NULL, default `student` |
 | `created_at` | timestamptz | default `now()` |
 | `updated_at` | timestamptz | maintained by trigger |
 
-`app_role` ∈ `staff` · `reviewer` · `approver` · `admin`
+`app_role` ∈ `student` · `faculty` · `hod`
 
 ### `categories`
 
@@ -71,7 +71,7 @@ Join tables: `document_tags(document_id, tag_id)` and `indexed_file_tags(indexed
 | `metadata` | jsonb | **human-entered**, default `{}` |
 | `created_at` / `updated_at` | timestamptz | |
 
-`workflow_state` ∈ `draft` · `submitted` · `under_review` · `approved` · `rejected`
+`workflow_state` ∈ `draft` · `submitted` · `faculty_review` · `hod_review` · `approved` · `rejected` · `changes_requested`
 
 ### `document_versions`
 
@@ -129,7 +129,7 @@ First-class capability in the revised direction.
 
 ### `document_reviews`
 
-Minimal relational workflow record. Makes every reviewer/approver action attributable. **Not a workflow engine.**
+Minimal relational workflow record. Makes every review-tier action attributable. **Not a workflow engine.**
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -338,7 +338,7 @@ Local identity is `content_hash`, matching the cloud, so sync is a hash-keyed up
 
 ## Helper functions
 
-`current_app_role()`, `is_admin()`, `can_review()`, `can_approve()` — all `SECURITY DEFINER`, `STABLE`, with a pinned `search_path`. `SECURITY DEFINER` is required to avoid recursive RLS evaluation when a `profiles` policy needs to read `profiles`.
+`current_app_role()`, `is_hod()`, `can_review()` and `document_is_visible()` use `SECURITY DEFINER`, `STABLE`, with a pinned `search_path`. `SECURITY DEFINER` is required to avoid recursive RLS evaluation when a `profiles` policy needs to read `profiles`.
 
 ## Custodial domain
 
@@ -353,13 +353,13 @@ Local identity is `content_hash`, matching the cloud, so sync is a hash-keyed up
 | `document_reviews` | Follows document visibility | **None** — written only by the transition function | **None** | **None** |
 | `audit_logs` | Own actions, **or** rows for documents the user can see, **or** admin (all) | **None** — function-written only | **None** (revoked + trigger-blocked) | **None** |
 
-Reviewers deliberately cannot see other users' **drafts** — only documents that have entered the workflow.
+Faculty and HOD users deliberately cannot see other users' **drafts** — only documents that have entered the workflow.
 
 ## Personal catalog domain
 
 Every table is **strictly owner-scoped**: `owner_id = auth.uid()` for `SELECT`, `INSERT`, `UPDATE` and `DELETE`.
 
-> **Admins have no access to any user's personal catalog.** This is a deliberate departure from "admin sees all". An institutional administrator has no legitimate need to read a student's or employee's personal desktop index, and granting it would make the desktop app untrustworthy.
+> Institutional management has no access to any user's personal catalog. This remains a deliberate privacy boundary for any future personal-index feature.
 
 Applies to: `indexed_files`, `file_locators`, `devices`, `indexed_folders`, `search_profiles`, `similarity_links`, `indexed_file_tags`.
 
@@ -402,11 +402,14 @@ Three independent enforcement layers exist deliberately: a client cannot weaken 
 
 | From | To | Permitted roles |
 | --- | --- | --- |
-| `draft` | `submitted` | Owner, admin |
-| `submitted` | `under_review` | Reviewer, approver, admin |
-| `under_review` | `approved` | Approver, admin — **never the owner** |
-| `under_review` | `rejected` | Reviewer, approver, admin — **never the owner** |
-| `rejected` | `draft` | Owner, admin (resubmission path) |
+| `draft` | `submitted` | Owner |
+| `submitted` | `draft` | Owner (withdraw) |
+| `submitted` | `faculty_review` / `hod_review` | Faculty or HOD |
+| `faculty_review` | `approved` / `rejected` / `changes_requested` | Faculty or HOD — **never the owner** |
+| `faculty_review` | `hod_review` | Faculty or HOD (routing) |
+| `hod_review` | `approved` / `rejected` / `changes_requested` | HOD — **never the owner** |
+| `changes_requested` | `submitted` | Owner |
+| `rejected` | `draft` | Owner |
 
 ## System-initiated transition
 
@@ -419,9 +422,9 @@ This is recorded explicitly because it is the one legal path out of a terminal s
 ## Explicitly rejected transitions
 
 - `draft` → `approved`
-- `draft` → `under_review`
+- `draft` → `faculty_review`
 - `submitted` → `approved`
-- `approved` → `under_review`
+- `approved` → `faculty_review`
 - `rejected` → `approved` (approval requires resubmission first)
 - Any state → itself
 
@@ -452,7 +455,7 @@ This is a fixed state machine held in constraints and functions. It is **not** a
 3. **Folder-scope prefix matching depends on path normalization.** Case sensitivity, trailing separators, UNC paths and drive letters on Windows must be normalized consistently at index time, or scope filters will silently miss files.
 4. **Lexical similarity may look weak on a small or homogeneous corpus.** The `method` discriminator keeps the upgrade path open, but demo corpus selection matters.
 5. **`keywords` as `text[]` with GIN is fast but unranked.** Term-frequency weighting lives in the FTS index, not the array, so the two must be kept consistent.
-6. **Personal catalogs excluded from admin visibility** is the right privacy call but means an institution cannot audit personal indexes at all. That is intentional and should be stated to stakeholders rather than discovered.
+6. **Personal catalogs excluded from institutional-management visibility** is the right privacy call but means an institution cannot audit personal indexes at all. That is intentional and should be stated to stakeholders rather than discovered.
 7. **Tombstones grow unbounded.** No retention policy is defined for MVP; this needs one before any real deployment.
 8. **`content_hash` collisions are ignored.** SHA-256 collision risk is negligible, but two genuinely identical files in different folders correctly collapse to one catalog row with two locators — which is intended behaviour, though it may surprise users who expect two entries.
 9. **Removed from the earlier design:** the `workflows` table (states/transitions as data) — superseded by the fixed state machine, per the "no complex workflow builders" constraint; `document_chunks`, `search_vector` per chunk and `embedding` columns — deferred with Q&A and pgvector; `document_deadlines` — dropped as over-modeling, since deadline extraction is not in the revised MVP.

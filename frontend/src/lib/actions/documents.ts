@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { requireSession } from '@/lib/auth';
 import { classify, deriveTitle, safeFilename } from '@/lib/classify';
 import { ALLOWED_MIME_TYPES, MAX_FILE_BYTES, STORAGE_BUCKET } from '@/lib/constants';
-import { fail, mapDbError, succeed, type ActionResult } from '@/lib/errors';
+import { fail, logAndMap, mapDbError, succeed, type ActionResult } from '@/lib/errors';
 import { createClient } from '@/lib/supabase/server';
 import type { Category, WorkflowState } from '@/lib/types';
 
@@ -45,7 +45,7 @@ export async function uploadDocument(formData: FormData): Promise<ActionResult<{
     .eq('is_active', true);
 
   if (catError) {
-    const mapped = mapDbError(catError);
+    const mapped = logAndMap('categories query', catError);
     return fail(mapped.code, mapped.message);
   }
 
@@ -97,7 +97,7 @@ export async function uploadDocument(formData: FormData): Promise<ActionResult<{
     .single();
 
   if (docError || !doc) {
-    const mapped = mapDbError(docError);
+    const mapped = logAndMap('documents insert', docError);
     return fail(mapped.code, mapped.message);
   }
 
@@ -108,6 +108,9 @@ export async function uploadDocument(formData: FormData): Promise<ActionResult<{
     .upload(objectKey, file, { contentType: file.type, upsert: false });
 
   if (uploadError) {
+    console.error(
+      `[uploadDocument] step="storage upload" key=${objectKey} message=${JSON.stringify(uploadError.message)}`,
+    );
     // Roll back the draft so a failed upload leaves nothing behind.
     await supabase.from('documents').delete().eq('id', doc.id);
     return fail('UPLOAD_FAILED', `The file could not be stored: ${uploadError.message}`);
@@ -125,14 +128,17 @@ export async function uploadDocument(formData: FormData): Promise<ActionResult<{
   });
 
   if (versionError) {
+    const mapped = logAndMap('create_document_version RPC', versionError);
+    // Rollback order matters: remove the stored object first, then the row, so
+    // we never leave an object whose document no longer exists.
     await supabase.storage.from(STORAGE_BUCKET).remove([objectKey]);
     await supabase.from('documents').delete().eq('id', doc.id);
-    const mapped = mapDbError(versionError);
     return fail(mapped.code, mapped.message);
   }
 
-  // 4. Audit the upload and the automatic filing decision.
-  await supabase.rpc('log_audit_event', {
+  // 4. Audit the upload and the automatic filing decision. A failure here must
+  //    not discard a successful upload, but it must not pass silently either.
+  const { error: auditError } = await supabase.rpc('log_audit_event', {
     p_document_id: doc.id,
     p_action: 'document_uploaded',
     p_metadata: {
@@ -143,6 +149,10 @@ export async function uploadDocument(formData: FormData): Promise<ActionResult<{
       matched_terms: matchedTerms,
     },
   });
+
+  if (auditError) {
+    logAndMap('log_audit_event RPC (non-fatal)', auditError);
+  }
 
   revalidatePath('/workspace');
   return succeed({ id: doc.id });

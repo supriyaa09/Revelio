@@ -42,7 +42,7 @@ create policy "documents_read" on storage.objects
     and public.document_is_visible(storage_document_id(name))
   );
 
--- Write: only the document owner (or an admin) may add objects, and only under
+-- Write: only the document owner (or the HOD) may add objects, and only under
 -- their own document's prefix.
 create policy "documents_insert" on storage.objects
   for insert to authenticated
@@ -52,7 +52,7 @@ create policy "documents_insert" on storage.objects
     and exists (
       select 1 from public.documents d
       where d.id = storage_document_id(name)
-        and (d.owner_id = auth.uid() or public.is_admin())
+        and (d.owner_id = auth.uid() or public.is_hod())
     )
   );
 

@@ -82,7 +82,8 @@ export default async function SearchPage({
           <option value="">Any status</option>
           <option value="draft">Draft</option>
           <option value="submitted">Submitted</option>
-          <option value="under_review">Under review</option>
+          <option value="faculty_review">Faculty review</option>
+          <option value="hod_review">HOD review</option>
           <option value="approved">Approved</option>
           <option value="rejected">Rejected</option>
           <option value="changes_requested">Changes requested</option>

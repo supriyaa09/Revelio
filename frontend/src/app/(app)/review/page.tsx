@@ -3,17 +3,23 @@ import { redirect } from 'next/navigation';
 import { Inbox } from 'lucide-react';
 import { requireSession } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
-import { canReview, REVIEW_QUEUE_STATES } from '@/lib/constants';
+import { canReview, decisionStatesForRole, REVIEW_QUEUE_STATES } from '@/lib/constants';
 import { StatusBadge } from '@/components/badges';
 import { EmptyState, formatDateTime } from '@/components/ui';
 import type { DocumentListItem } from '@/lib/types';
 
-/** HOD / reviewer view: prioritizes documents waiting for a decision. */
+/**
+ * Faculty / HOD queue, partitioned by decision authority.
+ *
+ * Faculty act on `submitted` and `faculty_review`; escalated documents are
+ * shown read-only so they can still be tracked. HOD additionally act on
+ * `hod_review`, which is surfaced first.
+ */
 export default async function ReviewPage() {
   const { profile } = await requireSession();
 
-  // Server-side gate. RLS would return nothing anyway, but a clean redirect
-  // beats an empty page for a role that shouldn't be here.
+  // Server-side gate. RLS would return nothing for a student anyway, but a
+  // clean redirect beats an empty page.
   if (!canReview(profile.role)) redirect('/workspace');
 
   const supabase = await createClient();
@@ -35,20 +41,30 @@ export default async function ReviewPage() {
     .limit(100);
 
   const docs = (data ?? []) as unknown as DocumentListItem[];
+  const decidable = decisionStatesForRole(profile.role);
 
-  // A reviewer cannot decide on their own document, so surface that up front.
-  const actionable = docs.filter((d) => d.owner_id !== profile.id);
+  const isHod = profile.role === 'hod';
+  const notMine = (d: DocumentListItem) => d.owner_id !== profile.id;
+
+  // Escalated work first for the HOD, since that is what only they can clear.
+  const escalated = docs.filter((d) => d.workflow_status === 'hod_review' && notMine(d));
+  const facultyTier = docs.filter(
+    (d) =>
+      (d.workflow_status === 'submitted' || d.workflow_status === 'faculty_review') && notMine(d),
+  );
   const ownDocs = docs.filter((d) => d.owner_id === profile.id);
 
   return (
     <div className="mx-auto max-w-5xl">
       <h1 className="text-2xl font-semibold tracking-tight">Review queue</h1>
       <p className="mt-1 text-sm text-slate-500">
-        Documents awaiting review, oldest first. You cannot decide on your own submissions.
+        Oldest first. You cannot decide on your own submissions, whatever your role.
       </p>
 
       {error ? (
-        <div className="card mt-6 p-6 text-sm text-red-700">Could not load queue: {error.message}</div>
+        <div className="card mt-6 p-6 text-sm text-red-700">
+          Could not load queue: {error.message}
+        </div>
       ) : docs.length === 0 ? (
         <div className="mt-6">
           <EmptyState
@@ -59,14 +75,48 @@ export default async function ReviewPage() {
         </div>
       ) : (
         <div className="mt-6 space-y-6">
-          <QueueList title="Awaiting your decision" docs={actionable} />
+          {isHod ? (
+            <>
+              <QueueList
+                title="Escalated to you"
+                hint="Only the HOD can decide on these."
+                docs={escalated}
+              />
+              <QueueList
+                title="Faculty tier"
+                hint="You may also act on these directly."
+                docs={facultyTier}
+              />
+            </>
+          ) : (
+            <>
+              <QueueList title="Awaiting your decision" docs={facultyTier} />
+              <QueueList
+                title="Escalated to HOD"
+                hint="Read-only. Awaiting the HOD's decision."
+                docs={escalated}
+                muted
+              />
+            </>
+          )}
+
           {ownDocs.length > 0 && (
             <QueueList
               title="Your own submissions"
-              hint="Visible for tracking. Another reviewer must decide on these."
+              hint={
+                isHod
+                  ? 'Visible for tracking. A faculty member must decide on these.'
+                  : 'Visible for tracking. Another reviewer, or the HOD, must decide on these.'
+              }
               docs={ownDocs}
               muted
             />
+          )}
+
+          {decidable.length === 0 && (
+            <p className="text-xs text-slate-400">
+              Your role has no decision authority in this queue.
+            </p>
           )}
         </div>
       )}

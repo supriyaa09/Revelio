@@ -6,10 +6,11 @@
 create extension if not exists "pgcrypto";
 
 -- ── Enums ───────────────────────────────────────────────────────────────────
-create type app_role as enum ('staff', 'reviewer', 'approver', 'admin');
+create type app_role as enum ('student', 'faculty', 'hod');
 
 create type workflow_state as enum (
-  'draft', 'submitted', 'under_review', 'approved', 'rejected', 'changes_requested'
+  'draft', 'submitted', 'faculty_review', 'hod_review',
+  'approved', 'rejected', 'changes_requested'
 );
 
 create type processing_state as enum ('pending', 'processing', 'completed', 'failed');
@@ -19,14 +20,15 @@ create type extraction_method as enum ('text', 'ocr', 'mixed');
 create type metadata_source as enum ('ai', 'user', 'system');
 
 create type review_action as enum (
-  'review_started', 'approved', 'rejected', 'changes_requested', 'commented'
+  'review_started', 'routed_to_hod', 'approved',
+  'rejected', 'changes_requested', 'commented'
 );
 
 -- ── Profiles ────────────────────────────────────────────────────────────────
 create table profiles (
   id          uuid primary key references auth.users (id) on delete cascade,
   full_name   text not null default '',
-  role        app_role not null default 'staff',
+  role        app_role not null default 'student',
   department_id uuid,                              -- FK added after departments
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
@@ -246,15 +248,26 @@ begin
   insert into public.profiles (id, full_name, role)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1)),
-    -- Role is never taken from client-supplied metadata; staff is the floor.
-    'staff'
+    -- Three-step fallback so this can never resolve to NULL. profiles.full_name
+    -- is NOT NULL, and because this trigger runs inside the signup transaction,
+    -- a constraint violation here would abort the signup itself and surface as
+    -- "Database error saving new user" with no auth user created. email is
+    -- nullable for phone/OAuth identities, hence the final literal.
+    coalesce(
+      nullif(btrim(new.raw_user_meta_data ->> 'full_name'), ''),
+      nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
+      'User'
+    ),
+    -- Role is never taken from client-supplied metadata; student is the floor.
+    -- Faculty and HOD are assigned separately by an HOD.
+    'student'
   )
   on conflict (id) do nothing;
   return new;
 end;
 $$;
 
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
@@ -297,9 +310,16 @@ security definer
 set search_path = public
 as $$
 begin
-  perform refresh_document_search(
-    case when tg_table_name = 'documents' then new.id else new.document_id end
-  );
+  -- Two separate statements, deliberately NOT one CASE expression. plpgsql
+  -- binds every parameter of a single expression before the executor evaluates
+  -- it, so `case ... then new.id else new.document_id end` would resolve
+  -- new.document_id even on `documents`, where that field does not exist, and
+  -- raise "record new has no field document_id" on every insert.
+  if tg_table_name = 'documents' then
+    perform refresh_document_search(new.id);
+  else
+    perform refresh_document_search(new.document_id);
+  end if;
   return new;
 end;
 $$;

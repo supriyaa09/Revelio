@@ -27,7 +27,7 @@ export function AppSidebar({ role }: { role: AppRole }) {
         <div className="grid size-7 place-items-center rounded-lg bg-brand-600 text-white">
           <FileText className="size-4" />
         </div>
-        <span className="font-semibold tracking-tight">DocIntel</span>
+        <span className="font-semibold tracking-tight">Revelio</span>
       </div>
 
       <nav className="flex flex-col gap-1 p-3">

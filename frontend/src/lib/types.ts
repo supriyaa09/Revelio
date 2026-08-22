@@ -1,9 +1,15 @@
-export type AppRole = 'staff' | 'reviewer' | 'approver' | 'admin';
+export type AppRole = 'student' | 'faculty' | 'hod';
 
+/**
+ * Two distinct review states, not one. The tier holding the document has to be
+ * part of the state, otherwise nothing can restrict HOD-tier approval to the
+ * HOD or distinguish an escalated document from a normal one.
+ */
 export type WorkflowState =
   | 'draft'
   | 'submitted'
-  | 'under_review'
+  | 'faculty_review'
+  | 'hod_review'
   | 'approved'
   | 'rejected'
   | 'changes_requested';
@@ -103,7 +109,13 @@ export interface ReviewEntry {
   id: string;
   document_id: string;
   reviewer_id: string;
-  action: 'review_started' | 'approved' | 'rejected' | 'changes_requested' | 'commented';
+  action:
+    | 'review_started'
+    | 'routed_to_hod'
+    | 'approved'
+    | 'rejected'
+    | 'changes_requested'
+    | 'commented';
   from_state: WorkflowState | null;
   to_state: WorkflowState | null;
   comment: string | null;

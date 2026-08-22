@@ -164,11 +164,107 @@ The desktop application never moves, renames, deletes or writes to a user's file
 
 **Reasoning:** we are indexing people's real personal folders. A single unwanted file move would destroy trust in the product permanently. The guarantee is worth more than the convenience.
 
-## ADR-020 Personal catalogs are invisible to administrators
+## ADR-021 Final role model: student, faculty, hod
+**Status:** Accepted — supersedes the role portions of ADR-012 and ADR-020
+
+Exactly three roles. `staff → student`, `reviewer → faculty`, `approver → hod`, `admin → hod`.
+
+**Why the admin role was removed:** in an institutional department there is no separate administrator persona. The HOD is the accountable authority, so HOD inherits management duties — categories, departments and role assignment. Keeping a fourth role would have meant a permission tier nobody occupies.
+
+**Consequence:** `is_admin()` is replaced by `is_hod()`, and the four `*_admin` policies become `*_manage_hod`.
+
+**Accepted cost:** role assignment now requires an HOD account, or direct SQL for the first one. There is no bootstrap admin.
+
+## ADR-022 Two review states rather than one
 **Status:** Accepted
+
+`under_review` is split into **`faculty_review`** and **`hod_review`**.
+
+**Reasoning:** a single review state cannot record *which tier* holds the document. Without that, the database cannot restrict HOD-tier approval to the HOD, and cannot distinguish an escalated document from an ordinary one. Encoding the tier in the state means the `(from, to)` pair alone carries enough information to authorize a transition — no second column to keep in sync, and the existing `guard_workflow_transition` trigger keeps working unchanged.
+
+**Alternative rejected:** keeping `under_review` plus a `current_stage` column. That splits the truth across two columns, and the guard trigger would have to validate combinations rather than pairs.
+
+## ADR-023 Workflow is process-dependent, not a fixed chain
+**Status:** Accepted
+
+Documents are **not** hard-coded into Student → Faculty → HOD. Faculty may approve directly when HOD involvement is not required, or route to the HOD when the process demands it. Both a student-originated and a faculty-originated document can take either path.
+
+Implemented as 13 explicit edges in `is_valid_transition`, including two escalation edges: `submitted → hod_review` and `faculty_review → hod_review`.
+
+**Reasoning:** institutional processes differ per document type. Forcing every document through three tiers would add a mandatory approval step that most documents do not need, and would make the HOD a bottleneck.
+
+## ADR-024 Students cannot reach the HOD structurally
+**Status:** Accepted
+
+Both escalation edges require `can_review()`, which is `faculty` or `hod`. A student therefore cannot perform them.
+
+**Reasoning:** this is deliberately *structural* rather than a dedicated "students may not escalate" check. A rule expressed as an absence of capability cannot be forgotten when a new transition is added later; an explicit guard clause can.
+
+## ADR-025 Routing is a hand-off, not a decision
+**Status:** Accepted
+
+Separation of duties applies to `approved`, `rejected` and `changes_requested`. It does **not** apply to `faculty_review` or `hod_review`, so a document owner may route their own document to the HOD.
+
+**Reasoning:** faculty can create and submit documents independently, but cannot review their own. Without self-escalation, a faculty-created document would need a *second* faculty member to progress — so in a single-faculty department, or a three-account demo, it could never be approved at all. Escalating your own document is not self-approval: the HOD still decides.
+
+**Accepted cost:** a faculty member can push their own document to the HOD without a peer review first. That is the intended institutional behaviour.
+
+## ADR-026 Enum recreation over ALTER TYPE ADD VALUE
+**Status:** Accepted
+
+`0004_roles_workflow.sql` recreates `app_role`, `workflow_state` and `review_action` (rename → create → `ALTER COLUMN ... USING` remap → drop old) rather than adding values in place.
+
+**Reasoning:** two concrete reasons. First, the role value set is being *replaced*, and leaving four dead values in a three-role enum is exactly the schema drift we want to avoid. Second, PostgreSQL forbids using a newly added enum value in DML within the same transaction, so `ADD VALUE` would have forced the row remap into a separate migration step — losing atomicity.
+
+The whole migration runs in one transaction: it either applies completely or rolls back. No table is dropped, no row deleted, no auth user touched.
+
+**Trap this surfaced:** `create_document_version` called `is_admin()` in its PL/pgSQL body. Bodies are not dependency-tracked, so `DROP FUNCTION is_admin()` succeeds silently and that RPC would then fail **at runtime on every version upload**. It is replaced in the same migration.
+
+## ADR-027 Grants and RLS are two independent layers
+**Status:** Accepted
+
+Table-level privileges are granted to `authenticated` only, and are deliberately **narrower** than the Supabase default. `anon` receives no privilege on any application table.
+
+**Why this is an ADR:** the project treated RLS as *the* authorization boundary and never reasoned about `GRANT`. That produced `42501 permission denied for table categories` while every policy was correct — because PostgreSQL evaluates table privileges **before** row-level security, so a correct policy is unreachable without a grant. The two mechanisms answer different questions:
+
+| Mechanism | Question |
+| --- | --- |
+| `GRANT` | May this role touch this table at all? |
+| RLS policy | Which rows, and under what condition? |
+
+**Grant matrix.** Where RLS has no policy for a write, the privilege is withheld as well, so the layers reinforce each other instead of duplicating:
+
+| Table | `authenticated` | Reasoning |
+| --- | --- | --- |
+| `profiles` | select, insert, update | No delete — removal cascades from `auth.users` |
+| `departments`, `categories` | select, insert, update, delete | Read by everyone; writes gated to HOD by policy |
+| `documents` | select, insert, update, delete | Policy gates owner / review tier / HOD |
+| `document_versions` | select, **insert only** | Immutable: no UPDATE/DELETE policy *and* no privilege |
+| `document_insights`, `document_chunks`, `document_search` | select | Written by the pipeline or a trigger |
+| `document_comments` | select, insert, delete | Policy gates author / HOD |
+| `document_reviews` | select | Written only inside `transition_document()` |
+| `audit_logs` | select | Append-only; INSERT only via SECURITY DEFINER |
+
+**Nothing to `anon`.** No application table needs anonymous access, and every policy is already scoped `to authenticated`. This is stricter than Supabase's stock template, which grants `anon` full table privileges and relies solely on RLS to deny.
+
+**Accepted cost:** a new table needs an explicit grant. `ALTER DEFAULT PRIVILEGES` covers tables created after `0006`, but not any created before it — which is exactly how the original ones were missed.
+
+## ADR-028 SECURITY DEFINER fallbacks must not mask privilege errors
+**Status:** Accepted
+
+`requireSession()` discarded the error from its `profiles` SELECT and fell through to `ensure_profile()`. Because that RPC is `SECURITY DEFINER`, it bypasses table grants — so a missing `GRANT` on `profiles` produced a *working-looking* app while every other table failed. The masking cost hours of misdirected debugging.
+
+**Rule:** a `SECURITY DEFINER` recovery path may only handle the condition it was written for. `requireSession()` now inspects the error, treats `42501` as a hard configuration failure with an actionable message, and reserves `ensure_profile()` for a genuinely absent row.
+
+**Corollary:** the same applies to swallowed errors generally. The workspace discarded its taxonomy-load errors, rendering a missing grant as an empty folder tree indistinguishable from an unseeded database; and `mapDbError()` collapsed unmapped SQLSTATEs into "Something went wrong", hiding a `42703` trigger bug. All three are now surfaced.
+
+## ADR-020 Personal catalogs are invisible to administrators
+**Status:** **Obsolete** — the desktop application was cancelled (see ADR-008/ADR-011 supersession by the one-web-app direction). Retained for the reasoning trail.
 
 Personal desktop catalog tables are strictly owner-scoped. Institutional admins have **no** read access to any user's personal index.
 
 **Reasoning:** a deliberate departure from "admin sees all". An institutional administrator has no legitimate need to read a student's or employee's personal file index, and granting it would make the desktop app untrustworthy for its actual audience.
 
 **Accepted cost:** an institution cannot audit personal indexes at all. This should be stated to stakeholders rather than discovered later.
+
+**Note:** the privacy principle survives in a narrower form — reviewers and the HOD cannot see another user's **drafts**. Only documents that have entered the workflow become visible to the reviewer tier.

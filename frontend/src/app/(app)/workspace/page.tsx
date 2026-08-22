@@ -6,7 +6,7 @@ import { ProcessingBadge, StatusBadge } from '@/components/badges';
 import { EmptyState, formatBytes, formatDate } from '@/components/ui';
 import type { DocumentListItem } from '@/lib/types';
 
-/** Staff workspace: the automatically organized folder tree plus documents. */
+/** Document workspace: the automatically organized folder tree plus documents. */
 export default async function WorkspacePage({
   searchParams,
 }: {
@@ -16,14 +16,26 @@ export default async function WorkspacePage({
   const { profile } = await requireSession();
   const supabase = await createClient();
 
-  const [{ data: departments }, { data: categories }] = await Promise.all([
-    supabase.from('departments').select('id, name, slug, sort_order').order('sort_order'),
-    supabase
-      .from('categories')
-      .select('id, department_id, name, slug, sort_order')
-      .eq('is_active', true)
-      .order('sort_order'),
-  ]);
+  const [{ data: departments, error: deptError }, { data: categories, error: catError }] =
+    await Promise.all([
+      supabase.from('departments').select('id, name, slug, sort_order').order('sort_order'),
+      supabase
+        .from('categories')
+        .select('id, department_id, name, slug, sort_order')
+        .eq('is_active', true)
+        .order('sort_order'),
+    ]);
+
+  // Surface taxonomy failures. Previously these errors were discarded, so a
+  // missing GRANT rendered as an empty folder tree indistinguishable from an
+  // unseeded database — which hid the real cause of the upload failure.
+  const taxonomyError = deptError ?? catError;
+  if (taxonomyError) {
+    console.error(
+      `[workspace] taxonomy load failed: sqlstate=${taxonomyError.code ?? 'n/a'} ` +
+        `message=${JSON.stringify(taxonomyError.message)}`,
+    );
+  }
 
   let query = supabase
     .from('documents')
@@ -112,7 +124,13 @@ export default async function WorkspacePage({
 
           {!departments?.length && (
             <p className="px-3 py-2 text-xs text-slate-500">
-              No categories yet. Run the seed script to create the taxonomy.
+              {taxonomyError ? (
+                <span className="text-red-700">
+                  Could not load folders: {taxonomyError.message}
+                </span>
+              ) : (
+                'No categories yet. Run supabase/seed/seed.sql to create the taxonomy.'
+              )}
             </p>
           )}
         </nav>

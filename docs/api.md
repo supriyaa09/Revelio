@@ -62,7 +62,7 @@ List documents visible to the caller.
 
 Query parameters: `q`, `category`, `workflow_status`, `owner`, `tag`, `date_from`, `date_to`, `limit`, `cursor`.
 
-Authorization constraints are applied by RLS **before** results are returned. A reviewer never sees another user's drafts.
+Authorization constraints are applied by RLS **before** results are returned. Faculty and HOD users never see another user's drafts.
 
 ## `GET /api/documents/{document_id}`
 
@@ -70,7 +70,7 @@ Returns the document, its current version, metadata, tags, and comment/version c
 
 ## `PATCH /api/documents/{document_id}`
 
-Update `title`, `description`, `category_id`, `metadata`, `tags`. Permitted only while `draft`, and only for the owner or an admin.
+Update `title`, `description`, `category_id`, `metadata`, `tags`. Permitted only while `draft`, and only for the owner or HOD.
 
 Attempting to change `workflow_status` here returns `VALIDATION_ERROR` — transitions have their own endpoint.
 
@@ -115,7 +115,7 @@ Version history, newest first. Previous versions always remain listed and readab
 Request:
 
 ```json
-{ "to_state": "under_review", "comment": "Ready for verification" }
+{ "to_state": "faculty_review", "comment": "Ready for verification" }
 ```
 
 The server:
@@ -138,7 +138,7 @@ Combined workflow and audit history, newest first: action, actor, `from_state`, 
 
 ## `GET /api/categories` · `POST` · `PATCH` · `DELETE`
 
-Read for any authenticated user. Writes are admin-only, enforced by RLS. `name` is unique; a conflict returns `409 CONFLICT`.
+Read for any authenticated user. Writes are HOD-only, enforced by RLS. `name` is unique; a conflict returns `409 CONFLICT`.
 
 ---
 

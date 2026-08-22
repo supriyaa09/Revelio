@@ -2,14 +2,22 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, Send, Undo2, X } from 'lucide-react';
+import { ArrowUpRight, Check, Loader2, Send, Undo2, X } from 'lucide-react';
 import { transitionDocument } from '@/lib/actions/documents';
-import { ALLOWED_TRANSITIONS, canApprove, canReview } from '@/lib/constants';
+import { ALLOWED_TRANSITIONS, canDecideAt, canReview, canRoute } from '@/lib/constants';
 import type { AppRole, WorkflowState } from '@/lib/types';
 
+interface Action {
+  to: WorkflowState;
+  label: string;
+  icon: typeof Check;
+  style: string;
+  needsComment?: boolean;
+}
+
 /**
- * Renders only the transitions the current user could plausibly perform.
- * This is a convenience layer: every rule is re-checked in the database, so a
+ * Offers only the transitions this user could plausibly perform in this state.
+ * A convenience layer: every rule is re-checked by transition_document(), so a
  * crafted request cannot bypass what is hidden here.
  */
 export function WorkflowActions({
@@ -47,11 +55,11 @@ export function WorkflowActions({
   }
 
   const possible = ALLOWED_TRANSITIONS[status];
+  // A decision needs the right tier AND must not be on your own document.
+  const mayDecide = canDecideAt(role, status) && !isOwner;
+  const actions: Action[] = [];
 
-  // Owners submit and resubmit. Reviewers decide — but never on their own doc.
-  const canDecide = canReview(role) && !isOwner;
-  const actions: { to: WorkflowState; label: string; icon: typeof Check; style: string }[] = [];
-
+  // ── Owner moves ───────────────────────────────────────────────────────────
   if (possible.includes('submitted') && isOwner) {
     actions.push({
       to: 'submitted',
@@ -60,10 +68,27 @@ export function WorkflowActions({
       style: 'btn-primary w-full',
     });
   }
-  if (possible.includes('under_review') && canDecide) {
-    actions.push({ to: 'under_review', label: 'Start review', icon: Check, style: 'btn-primary w-full' });
+
+  // ── Pickup and routing. Reviewer tier only, owner permitted. ──────────────
+  if (possible.includes('faculty_review') && canRoute(role)) {
+    actions.push({
+      to: 'faculty_review',
+      label: 'Start faculty review',
+      icon: Check,
+      style: 'btn-primary w-full',
+    });
   }
-  if (possible.includes('approved') && canDecide && canApprove(role)) {
+  if (possible.includes('hod_review') && canRoute(role)) {
+    actions.push({
+      to: 'hod_review',
+      label: status === 'submitted' ? 'Escalate to HOD' : 'Route to HOD',
+      icon: ArrowUpRight,
+      style: 'btn w-full bg-violet-600 text-white hover:bg-violet-700',
+    });
+  }
+
+  // ── Decisions ─────────────────────────────────────────────────────────────
+  if (possible.includes('approved') && mayDecide) {
     actions.push({
       to: 'approved',
       label: 'Approve',
@@ -71,22 +96,25 @@ export function WorkflowActions({
       style: 'btn w-full bg-emerald-600 text-white hover:bg-emerald-700',
     });
   }
-  if (possible.includes('changes_requested') && canDecide) {
+  if (possible.includes('changes_requested') && mayDecide) {
     actions.push({
       to: 'changes_requested',
       label: 'Request changes',
       icon: Undo2,
       style: 'btn w-full bg-orange-500 text-white hover:bg-orange-600',
+      needsComment: true,
     });
   }
-  if (possible.includes('rejected') && canDecide) {
+  if (possible.includes('rejected') && mayDecide) {
     actions.push({
       to: 'rejected',
       label: 'Reject',
       icon: X,
       style: 'btn w-full bg-red-600 text-white hover:bg-red-700',
+      needsComment: true,
     });
   }
+
   if (possible.includes('draft') && isOwner) {
     actions.push({
       to: 'draft',
@@ -96,20 +124,14 @@ export function WorkflowActions({
     });
   }
 
-  const needsComment = ['rejected', 'changes_requested'];
+  const showComment = actions.some((a) => a.needsComment);
 
   return (
     <section className="card p-5">
       <h2 className="font-medium">Actions</h2>
 
       {actions.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-500">
-          {status === 'approved'
-            ? 'This document is approved. Upload a new version to start another review cycle.'
-            : canReview(role) && isOwner
-              ? 'You cannot review your own document. Another reviewer must decide.'
-              : 'No actions available to you in this state.'}
-        </p>
+        <p className="mt-2 text-sm text-slate-500">{emptyReason(status, role, isOwner)}</p>
       ) : (
         <>
           {isOwner && !hasVersion && (
@@ -118,7 +140,13 @@ export function WorkflowActions({
             </p>
           )}
 
-          {actions.some((a) => needsComment.includes(a.to)) && (
+          {status === 'hod_review' && !isOwner && !mayDecide && (
+            <p className="mt-2 rounded-lg bg-violet-50 px-3 py-2 text-xs text-violet-800">
+              This document is escalated. Only the HOD can decide on it now.
+            </p>
+          )}
+
+          {showComment && (
             <div className="mt-3 space-y-1.5">
               <label htmlFor="wf-comment" className="label text-xs">
                 Comment
@@ -143,7 +171,11 @@ export function WorkflowActions({
                 onClick={() => act(to)}
                 className={style}
               >
-                {busy === to ? <Loader2 className="size-4 animate-spin" /> : <Icon className="size-4" />}
+                {busy === to ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Icon className="size-4" />
+                )}
                 {label}
               </button>
             ))}
@@ -158,4 +190,20 @@ export function WorkflowActions({
       )}
     </section>
   );
+}
+
+function emptyReason(status: WorkflowState, role: AppRole, isOwner: boolean): string {
+  if (status === 'approved') {
+    return 'This document is approved. Upload a new version to start another review cycle.';
+  }
+  if (isOwner && canReview(role)) {
+    return 'You cannot decide on your own document. Another reviewer, or the HOD, must act on it.';
+  }
+  if (status === 'hod_review' && !canDecideAt(role, status)) {
+    return 'This document is escalated to the HOD and is awaiting their decision.';
+  }
+  if (!canReview(role) && !isOwner) {
+    return 'You do not have review permissions for this document.';
+  }
+  return 'No actions available to you in this state.';
 }

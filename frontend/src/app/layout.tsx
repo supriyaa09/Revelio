@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'DocIntel — Institutional Document Intelligence',
+  title: 'Revelio — Institutional Document Intelligence',
   description:
     'Upload, organize, search, review and approve institutional documents with an auditable trail.',
 };

@@ -11,7 +11,8 @@ export const SIGNED_URL_TTL = 300;
 export const WORKFLOW_LABELS: Record<WorkflowState, string> = {
   draft: 'Draft',
   submitted: 'Submitted',
-  under_review: 'Under review',
+  faculty_review: 'Faculty review',
+  hod_review: 'HOD review',
   approved: 'Approved',
   rejected: 'Rejected',
   changes_requested: 'Changes requested',
@@ -21,7 +22,8 @@ export const WORKFLOW_LABELS: Record<WorkflowState, string> = {
 export const WORKFLOW_STYLES: Record<WorkflowState, string> = {
   draft: 'bg-slate-100 text-slate-700 ring-slate-200',
   submitted: 'bg-blue-50 text-blue-700 ring-blue-200',
-  under_review: 'bg-amber-50 text-amber-700 ring-amber-200',
+  faculty_review: 'bg-amber-50 text-amber-700 ring-amber-200',
+  hod_review: 'bg-violet-50 text-violet-700 ring-violet-200',
   approved: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
   rejected: 'bg-red-50 text-red-700 ring-red-200',
   changes_requested: 'bg-orange-50 text-orange-700 ring-orange-200',
@@ -35,30 +37,65 @@ export const PROCESSING_LABELS: Record<ProcessingState, string> = {
 };
 
 export const ROLE_LABELS: Record<AppRole, string> = {
-  staff: 'Staff',
-  reviewer: 'Reviewer',
-  approver: 'Approver / HOD',
-  admin: 'Administrator',
+  student: 'Student',
+  faculty: 'Faculty',
+  hod: 'HOD',
 };
 
-/** Mirrors is_valid_transition() in 0002_security.sql. UI convenience only —
- *  the database remains the enforcement point. */
+/**
+ * Mirrors is_valid_transition() in 0002_security.sql. UI convenience
+ * only — the database remains the enforcement point.
+ *
+ * Workflow is process-dependent: faculty may approve directly, or route to the
+ * HOD. Nothing forces a document through Student → Faculty → HOD.
+ */
 export const ALLOWED_TRANSITIONS: Record<WorkflowState, WorkflowState[]> = {
   draft: ['submitted'],
-  submitted: ['under_review', 'draft'],
-  under_review: ['approved', 'rejected', 'changes_requested'],
+  submitted: ['faculty_review', 'hod_review', 'draft'],
+  faculty_review: ['approved', 'rejected', 'changes_requested', 'hod_review'],
+  hod_review: ['approved', 'rejected', 'changes_requested'],
   approved: [],
   rejected: ['draft'],
   changes_requested: ['submitted'],
 };
 
+/** Faculty and HOD form the reviewer tier. Students never review. */
 export function canReview(role: AppRole): boolean {
-  return role === 'reviewer' || role === 'approver' || role === 'admin';
+  return role === 'faculty' || role === 'hod';
 }
 
-export function canApprove(role: AppRole): boolean {
-  return role === 'approver' || role === 'admin';
+export function isHod(role: AppRole): boolean {
+  return role === 'hod';
 }
 
-/** States that appear in the reviewer queue. */
-export const REVIEW_QUEUE_STATES: WorkflowState[] = ['submitted', 'under_review'];
+/**
+ * Approval authority is state-dependent, not role-dependent: faculty can decide
+ * at faculty_review, but only the HOD can decide once a document is escalated.
+ */
+export function canDecideAt(role: AppRole, state: WorkflowState): boolean {
+  if (state === 'hod_review') return isHod(role);
+  return canReview(role);
+}
+
+/**
+ * Routing and pickup require the reviewer tier but — unlike a decision — are
+ * permitted on your own document. Faculty escalating their own submission is
+ * legitimate; faculty approving it is not.
+ */
+export function canRoute(role: AppRole): boolean {
+  return canReview(role);
+}
+
+/** States that appear in the review queue. */
+export const REVIEW_QUEUE_STATES: WorkflowState[] = [
+  'submitted',
+  'faculty_review',
+  'hod_review',
+];
+
+/** Queue states this role has decision authority over. */
+export function decisionStatesForRole(role: AppRole): WorkflowState[] {
+  if (role === 'hod') return ['submitted', 'faculty_review', 'hod_review'];
+  if (role === 'faculty') return ['submitted', 'faculty_review'];
+  return [];
+}

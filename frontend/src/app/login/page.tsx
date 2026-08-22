@@ -12,7 +12,7 @@ export default function LoginPage() {
             <FileText className="size-6" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">Sign in to DocIntel</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Sign in to Revelio</h1>
             <p className="mt-1 text-sm text-slate-500">Institutional document intelligence</p>
           </div>
         </div>
