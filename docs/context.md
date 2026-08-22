@@ -6,24 +6,23 @@
 
 | Field | Current Value |
 | --- | --- |
-| Project name | TBD |
+| Project name | DocIntel (working name) |
 | Problem Statement ID | FS-05 |
 | Problem category | FULL-STACK DEVELOPMENT |
 | Problem title | Document Management |
-| Selected | Yes |
 | Hackathon duration | 24 hours |
 | Team size | 3 |
-| Tooling budget | Free services/free tiers preferred; no paid dependency required for MVP |
-| Product shape | **Two connected applications**: a web platform and a desktop application |
-| Web platform | Next.js (App Router) / TypeScript / Tailwind |
-| Desktop application | **Electron + TypeScript**, local index on SQLite + FTS5 |
-| Backend/data | Supabase PostgreSQL + Auth + Storage + RLS |
-| Identity | Supabase Auth is the single identity provider for **both** applications |
-| Search | SQLite FTS5 (local, desktop) + PostgreSQL FTS (cloud). No Elasticsearch. No pgvector in MVP. |
-| Similarity | Lexical (BM25/TF-IDF) in MVP; vector embeddings reserved as a stretch extension point |
-| AI provider | Gemini API, server-side only; default model target `gemini-3.1-flash-lite` subject to quota/access checks |
-| Deployment | Web: free static/SSR hosting (Vercel/Render); data/auth/storage: Supabase Free; desktop: local dev run for demo |
-| Current phase | Direction revised. Documentation synchronized; implementation not started. |
+| Product shape | **ONE web application** |
+| Frontend | Next.js 15.5 (App Router) · React 19 · TypeScript (strict) · Tailwind v4 |
+| Server layer | Next.js Server Actions + Route Handlers, executing as the signed-in user |
+| Database | Supabase PostgreSQL |
+| Auth | Supabase Auth (cookie sessions via `@supabase/ssr`) |
+| Storage | Supabase Storage, private `documents` bucket |
+| Authorization | PostgreSQL Row Level Security |
+| Search | PostgreSQL full-text search (weighted `tsvector`) |
+| AI | Gemini, server-side only, from Phase 3 |
+| OCR | Fallback only, for scanned/image documents |
+| Current phase | **Phases 1–2 implemented.** Phase 3 (intelligence) is next. |
 
 ## Official Problem Statement
 
@@ -40,527 +39,245 @@
 
 # Product Direction
 
-We are building:
+We are building **an AI-powered institutional document intelligence and management platform**: one web application in which every uploaded document enters a centralized cloud workspace, is processed automatically, and becomes searchable, queryable and governable.
 
-> **An AI-Powered Document Workflow & Knowledge Organization Platform.**
+## One application, two experiences
 
-The product consists of **two connected applications** that share one identity system and one metadata vocabulary.
+There is **one codebase, one database, one identity model**. The interface adapts to role:
 
-## Primary Product Differentiator: Intelligent Metadata-Driven Search
+- **Staff experience** prioritizes productivity and document intelligence.
+- **HOD / reviewer experience** prioritizes the review and approval queue.
 
-**The success of the MVP depends more on search quality than on OCR quality.**
+> **Superseded decision:** an earlier plan made a separate Electron desktop application the hero interface. That is **cancelled**. No desktop code was written, so nothing was discarded. Its intelligent-organization and search capabilities now live inside the web app.
 
-**Search is treated as the hero feature during architecture and implementation decisions.** When a design choice trades search quality against any other capability, search wins.
+## AI positioning
 
-## AI Positioning
-
-**AI is NOT the product. AI is an enhancement layer.**
-
-AI is responsible for:
-
-- Metadata extraction
-- Categorization
-- Similarity detection
-- Search enhancement
-- Summaries
-
-AI outputs are suggestions, never authoritative source data, and never silently overwrite human-entered metadata.
+AI is an **enhancement layer**, not the product. It extracts metadata, classifies documents, summarizes, answers questions grounded in retrieved chunks, and assists similarity. It never overwrites human-entered metadata, and every AI-derived value is labelled as such in the UI.
 
 ---
 
-# The Custody Model
+# Capabilities
 
-The single most important architectural principle:
+## Implemented (Phases 1–2)
 
-> **Files stay where they live. The platform owns only *derived* data — metadata, indexes, categories, similarity links and pointers.**
+| Area | State |
+| --- | --- |
+| Authentication | Sign up, sign in, sign out, cookie sessions, protected routes |
+| Roles | `staff`, `reviewer`, `approver`, `admin` — resolved server-side |
+| Upload | Server-validated, into a private bucket, immutable per version |
+| Document records | Title, description, owner, folder, status, tags, metadata, versions |
+| Automatic organization | Deterministic keyword classifier over the taxonomy, with confidence and provenance |
+| Folder browsing | Two-level department → category tree |
+| Document detail | Metadata, preview, comments, versions, review history, audit trail |
+| Workflow | Full state machine enforced in the database |
+| Versioning | Server-assigned numbers, previous versions retained |
+| Audit | Real rows written by database functions |
+| Comments | First-class, attributable |
+| Search | Title and description, plus status and folder filters |
 
-This gives one coherent platform with two custody modes.
+## Not yet implemented
 
-| | Custodial mode | Non-custodial mode |
-| --- | --- | --- |
-| Where files live | Platform storage (Supabase private bucket) | User's own disk today; Google Drive / OneDrive / Dropbox later |
-| Used by | Web platform | Desktop application |
-| Platform stores | Files **and** derived data | **Derived data only** |
-| Access governed by | Our RLS + workflow | **The source system's own permissions** |
-| Migration required | Yes, by definition | **Never** |
+| Area | Phase |
+| --- | --- |
+| Text extraction from PDFs | 3 |
+| OCR fallback for scanned documents | 3 |
+| AI metadata extraction, entity and date extraction | 3 |
+| AI summaries | 3 |
+| Full-text search over extracted text | 4 |
+| Similar-document discovery | 4 |
+| Document Q&A with source citations | 5 |
+| Cross-document questions | 5 |
 
-Consequences designed in from the start:
-
-1. **Identity is source-independent.** Local paths differ per machine and Drive has its own file IDs, so canonical document identity is a **SHA-256 content hash**, with per-source locator records attached to it.
-2. **Staleness is a first-class subsystem.** Files move, get renamed and change outside the platform. Non-custodial mode requires change detection (mtime + size, hash confirm), a re-index path, and explicit `missing` / `unreachable` states.
-3. **Source permissions are authoritative in non-custodial mode.** In future Drive mode, Drive's ACLs govern; the platform must never surface content the source would not.
+Anything in this second table is **absent, not stubbed**. The UI states plainly that intelligence features are not enabled rather than showing placeholder output.
 
 ---
 
-# Application 1 — Web Platform
+# Upload Pipeline
 
-**Purpose:** institutional document workflow management. This is the part that satisfies FS-05.
-
-**Custody:** custodial. Files are uploaded into platform storage.
-
-**Target users:** universities, colleges, government departments, NGOs, companies.
-
-## Capabilities
-
-- Authentication
-- Upload
-- Metadata
-- Categorization
-- Approval workflow
-- Rejection workflow
-- Comments
-- Versioning
-- Audit logs
-- Search
-
-## Core workflow
+Target pipeline. Steps 1–4 and 8 are implemented; steps 5–7 arrive in Phase 3.
 
 ```text
-Draft -> Submitted -> Under Review -> Approved / Rejected
+1. User uploads a file
+2. Server-side validation      (type allowlist, 25 MB cap)
+3. Private cloud storage       ({document_id}/v{n}/{filename})
+4. Document + version record   (version number assigned server-side)
+5. Text extraction             → direct PDF text first
+6. OCR fallback                → only when direct extraction yields too little
+7. AI metadata, classification refinement, summary
+8. Automatic organization      → department / category
+9. Indexing                    → weighted tsvector + retrieval chunks
+10. Available in the workspace
 ```
 
-with the resubmission path:
+The user performs step 1 only. Everything else is the platform's job — that is the point of the product.
+
+## Classification honesty
+
+At upload the classifier sees only the **title and filename**, and the document records `system_metadata.classification.basis = 'title_and_filename'`. Once extraction runs, the same classifier re-runs with document text and the basis changes. The UI shows the matched terms and a confidence percentage, so a user can always see why a document was filed where it was, and override it.
+
+---
+
+# Automatic Folder Organization
+
+A **controlled two-level taxonomy**, seeded rather than user-created, which avoids uncontrolled folder explosion while still giving a real institutional tree.
 
 ```text
-Rejected -> Draft
+Institution
+├── Academic         → Notices · Reports · Policies
+├── Administration   → Circulars · Requests · Forms
+├── Finance          → Budgets · Invoices · Approvals
+├── HR               → Recruitment · Leave · Policies
+└── Procurement      → Quotations · Purchase Requests · Vendor Documents
 ```
 
-## Roles
+Each category carries `match_keywords` that drive classification. Multi-word phrases score higher than single tokens, since they discriminate far better. A user-selected folder always overrides the classifier.
 
-`staff`, `reviewer`, `approver`, `admin`.
+Adding a category is a seed change, not a schema change.
 
-| Action | Staff | Reviewer | Approver | Admin |
+---
+
+# User Roles
+
+| Action | Staff | Reviewer | Approver / HOD | Admin |
 | --- | --- | --- | --- | --- |
-| Upload | Yes | Yes | Yes | Yes |
-| Edit draft metadata | Own docs | Own docs | Own docs | Yes |
-| Submit | Own docs | Own docs | Own docs | Yes |
+| Upload, view own documents | Yes | Yes | Yes | Yes |
+| Search, browse folders | Yes | Yes | Yes | Yes |
+| Edit own draft metadata | Yes | Yes | Yes | Yes |
+| Submit own document | Yes | Yes | Yes | Yes |
 | Comment | Yes | Yes | Yes | Yes |
-| Move to Under Review | No | Yes | Yes | Yes |
-| Approve | No | No | Yes | Yes |
-| Reject | No | Yes | Yes | Yes |
-| Manage users/roles | No | No | No | Yes |
-| Manage categories | No | No | No | Yes |
-| View audit logs | Own + own documents | Documents they can review | Documents they can approve | All |
-| View another user's personal desktop catalog | No | No | No | **No** |
+| See others' documents in workflow | No | Yes | Yes | Yes |
+| Start review | No | Yes | Yes | Yes |
+| Request changes, reject | No | Yes | Yes | Yes |
+| **Approve** | No | **No** | Yes | Yes |
+| Manage users, roles, categories | No | No | No | Yes |
 
-**Separation of duties:** a user may never approve or reject their own document, regardless of role.
+Two rules hold at every role:
 
----
+- **Reviewers cannot see another user's drafts.** A document becomes visible to reviewers only once it leaves `draft`.
+- **Separation of duties: nobody decides on their own document**, including admins. Enforced inside `transition_document`.
 
-# Application 2 — Desktop Application (Hero)
-
-**Purpose:** intelligent document organization and search over files the user already has.
-
-**Custody:** non-custodial. Indexed files never leave the machine unless the user explicitly enables cloud backup (future).
-
-**Target users:** students, researchers, professionals, small teams.
-
-**Status:** the desktop application is a **first-class product**, not a secondary feature. It is the primary demo.
-
-## Capabilities
-
-- User selects folders to index
-- Metadata extraction
-- Categorization
-- Similar-document grouping
-- Intelligent search
-- **Automatic organization recommendations**
-
-## Offline / Online model
-
-| Offline | Online |
-| --- | --- |
-| Local indexing | Login (Supabase Auth) |
-| Local search | Metadata synchronization |
-| Local categorization | Category synchronization |
-| Full core functionality | Search synchronization |
-| | Cloud backup of files (**future, optional**) |
-
-The desktop application must be fully usable with no network connection. Online features are additive.
-
-## Automatic organization recommendations
-
-Documents sharing **topic, category, keywords, author or department** are grouped automatically.
-
-MVP approach is **deterministic facet grouping** — grouping on shared category / author / department / keyword overlap — because it is cheap and, critically, *explainable*: "these 12 documents share department = Finance and keyword = budget."
-
-Future versions may support **suggested folder structures**.
-
-> **Hard rule: recommendations are non-destructive.** The application never moves, renames, deletes or writes to a user's files. It recommends; the user acts.
+New accounts always start as `staff`. Role is never accepted from client-supplied signup metadata.
 
 ---
 
-# Search Specification (Hero Feature)
-
-## Searchable dimensions
-
-- File name
-- Metadata
-- Content
-- Category
-- Tags
-- Author
-- Date
-- Folder scope
-
-## Representative queries
-
-- `Show scholarship documents`
-- `Show approved policies`
-- `Find AI-related files`
-- `Find files similar to this document`
-
-## Folder-scoped search
-
-Folder scope is a **core feature**, not a filter afterthought. Users can:
-
-- Search **all indexed folders**
-- Search **only selected folders**
-
-Example: search only `Research` and `Policies`; exclude `Downloads` and `Temporary Files`.
-
-Scope operates at two distinct levels:
-
-| Level | Meaning |
-| --- | --- |
-| **Index-time scope** | Which roots are indexed at all, plus global exclusions so junk never enters the index |
-| **Query-time scope** | Within the indexed corpus, restrict to a subset or subtract folders |
-
-Rules:
-
-- **Exclude wins over include.** Required for the nested case: include `/Research`, exclude `/Research/Temp`.
-- Folder paths are stored normalized and prefix-searchable so scope filters use an index rather than a scan.
-- **Saved scopes ("Search Profiles")** are first-class, because users reuse "only Research + Policies" constantly.
-- A **default exclusion list** ships with the app (Downloads, Temporary Files, AppData, caches, `node_modules`) so first-run indexing does not drown in junk.
-
-## Ranking
-
-Ranking is a specified artifact, not emergent behaviour:
-
-- Field weights: **title > file name > keywords > body**
-- Recency boost on document date / mtime
-- Exact-phrase boost
-- **Identical weights in both engines** (SQLite FTS5 and PostgreSQL FTS) so results feel consistent across applications
-
-## Query understanding (AI enhancement)
-
-Natural-language queries map onto structured facets:
-
-| Query | Facets |
-| --- | --- |
-| "Show approved policies" | `workflow_status = approved`, `category = policy` |
-| "Show scholarship documents" | keyword/topic = scholarship |
-| "Find AI-related files" | keyword/topic = AI |
-
-This is where AI genuinely earns its place: it improves the query, it is not the product. Query understanding must degrade gracefully to plain lexical search when AI is unavailable or offline.
-
-## Search quality is measured
-
-A committed **golden query set** (~20 queries with expected results) is a test artifact. This is the only way to avoid discovering at hour 20 that search "feels bad", and it directly serves the hero-feature claim.
-
-## Similarity
-
-- **MVP:** lexical similarity — BM25 / TF-IDF nearest-neighbour over the local FTS index.
-- **Stretch:** vector embeddings. The schema reserves an extension point; no vector column or dependency is created in MVP.
-- Excluded: pgvector in MVP, Elasticsearch entirely.
-
----
-
-# Synchronization Model
-
-- **Local files remain local by default.**
-- When online, the following **may** sync: metadata, search indexes, categories.
-- **Future:** users may optionally sync actual files to cloud storage.
-
-## Design
-
-| Concern | Decision |
-| --- | --- |
-| Identity across devices/sources | SHA-256 content hash |
-| Direction in MVP | **One-way push, desktop → cloud** (see assumption below) |
-| Index sync method | Sync **metadata + categories**; the cloud index is **re-derived** from them rather than shipping SQLite blobs |
-| Conflict policy | Last-writer-wins per content hash, using per-row `updated_at` + `device_id` |
-| Deletions | Tombstones, never hard deletes during sync |
-| Consent | **Opt-in per indexed folder** |
-
-> **Assumption flagged for confirmation:** MVP sync is one-way (desktop → cloud). Bidirectional sync is documented as a future step. Override this if you want two-way sync in MVP — it is the single largest schedule risk in the sync subsystem.
-
-**Privacy note:** enabling metadata sync means **file names, folder paths and keywords leave the machine**. A file name alone can be sensitive. This is stated plainly in-product and is opt-in per folder.
-
----
-
-# Cloud Strategy
-
-Roadmap:
-
-1. Managed cloud storage
-2. Bring-your-own-storage
-
-Future integrations: Google Drive, OneDrive, Dropbox.
-
-## Future Google Drive mode
-
-The user authenticates with Google. **Files remain inside Google Drive.** The platform:
-
-- Reads metadata
-- Creates indexes
-- Organizes files
-- Applies categorization
-- Provides search
-
-…**without requiring migration of files into platform storage.**
-
-**For MVP: do NOT implement these integrations.** Only prepare architecture extension points — a storage/source provider interface with `local_fs` and `platform_storage` implemented, and `google_drive` / `onedrive` / `dropbox` defined but unimplemented.
-
----
-
-# Updated MVP
-
-## Web app
-
-- Auth
-- Upload
-- Metadata
-- Workflow
-- Approval / Rejection
-- Versioning
-- Audit logs
-- Search
-- Comments
-- Minimal OCR (non-hero, retained for FS-05 compliance)
-
-## Desktop app
-
-- Folder selection (include / exclude)
-- Metadata extraction
-- Categorization
-- Similarity grouping (lexical)
-- Intelligent search (faceted, folder-scoped)
-- Automatic organization recommendations
-- Offline operation
-
-## AI
-
-- Metadata extraction
-- Categorization
-- Search enhancement (query understanding)
-- Summaries
-
-## Not in MVP
-
-- Elasticsearch
-- Multi-cloud implementation
-- Google Drive implementation
-- Dropbox implementation
-- OneDrive implementation
-- Full-drive indexing
-- Complex workflow builders
-- Enterprise permissions matrix
-- pgvector / vector embeddings
-- Grounded document Q&A (**moved to stretch**)
-- Configurable workflow editor
-- Analytics beyond basic operational counts
-- Enterprise SSO / SAML
-- Multi-region deployment
-- Knowledge-graph visualization
-
-## Stretch (only after the critical path is stable)
-
-- Vector-embedding similarity
-- Grounded Q&A with citations
-- Google Drive mode
-- Bidirectional sync
-- Optional file backup to cloud
-- Suggested folder structures
-
----
-
-# Core User Flows
-
-## Flow A — Desktop: select folders → indexed knowledge (hero)
-
-1. User launches the desktop app; no login required for local use.
-2. User selects folders to index and reviews the default exclusion list.
-3. App walks the selected roots, honouring excludes.
-4. For each file: hash, read metadata, extract text where cheap, derive keywords.
-5. Rows land in the local SQLite index; FTS5 is populated.
-6. Categorization assigns a category; similar documents are grouped.
-7. User sees an organized library with recommendations, entirely offline.
-
-## Flow B — Desktop: intelligent search
-
-1. User types a query, optionally in natural language.
-2. Query understanding maps it to facets where possible; otherwise plain lexical.
-3. User picks scope: all indexed folders, or only selected folders, with exclusions.
-4. Local FTS5 ranks results using the specified field weights.
-5. User opens a result, or asks for "files similar to this".
-
-## Flow C — Web: upload → governed record
-
-1. Staff signs in.
-2. Uploads a PDF into private platform storage.
-3. Adds category and metadata.
-4. A `document` and immutable `document_version` are created.
-5. Document starts in `draft`.
-
-## Flow D — Web: review → approval
-
-1. Staff submits a draft.
-2. Reviewer moves it to Under Review.
-3. Reviewer or approver reads metadata, comments and version history.
-4. Approver approves or rejects; the owner can never approve their own document.
-5. Every transition is validated server-side and written to the audit log.
-
-## Flow E — Web: new version
-
-1. Staff uploads a newer file against an existing document.
-2. An immutable new `document_version` row is created with a server-assigned version number.
-3. The current-version pointer moves only after the version row is committed.
-4. Previous versions remain intact and readable.
-5. An approved or rejected document returns to `draft`, starting a new review cycle.
-
-## Flow F — Sync (online, opt-in)
-
-1. User signs in on the desktop app.
-2. Device registers itself.
-3. For folders with sync enabled, metadata and categories are pushed to the cloud.
-4. Cloud search index is re-derived from the synced metadata.
-5. File bytes are **not** transmitted.
+# Workflow
+
+```text
+draft ──submit──▶ submitted ──start review──▶ under_review
+  ▲                   │                          ├──▶ approved
+  │                   └──withdraw──▶ draft       ├──▶ rejected ──▶ draft
+  │                                              └──▶ changes_requested
+  └──────────────── resubmit ◀──────────────────────────────┘
+```
+
+Legal transitions, and nothing else:
+
+| From | To | Who |
+| --- | --- | --- |
+| `draft` | `submitted` | Owner, admin |
+| `submitted` | `under_review` | Reviewer, approver, admin |
+| `submitted` | `draft` | Owner (withdraw before review starts) |
+| `under_review` | `approved` | **Approver or admin only** |
+| `under_review` | `rejected` | Reviewer, approver, admin |
+| `under_review` | `changes_requested` | Reviewer, approver, admin |
+| `changes_requested` | `submitted` | Owner (resubmit) |
+| `rejected` | `draft` | Owner |
+
+Uploading a new version onto an `approved` or `rejected` document returns it to `draft`, starting a new review cycle. The workflow always acts on the **same document record** — stages never duplicate a document.
+
+## Enforcement
+
+Three independent layers, so the UI is never the security boundary:
+
+1. `transition_document` (`SECURITY DEFINER`) locks the row, validates the state pair, validates role, enforces separation of duties, then writes the review record and audit row atomically.
+2. `guard_workflow_transition` trigger rejects an illegal state pair **even via direct SQL or a service-role connection**.
+3. RLS blocks status changes through the ordinary update path entirely.
 
 ---
 
 # Security Model
 
-- Supabase Auth required for all cloud data access.
-- **RLS is the primary authorization boundary.** Application code and UI are conveniences, never the enforcement point. UI hiding an action is not authorization.
-- Private Storage bucket for custodial files; no public objects; reads via short-lived signed URLs.
-- **The browser and the desktop binary never receive the service-role key or any AI API key.**
-- A desktop application cannot hold a secret. All AI calls are **proxied through an authenticated server endpoint**; the alternative is a user-supplied key. No provider key is ever shipped in the desktop bundle.
-- Desktop auth uses **PKCE**; refresh tokens live in the OS keychain (DPAPI / Keychain / libsecret), never a plaintext config file.
-- Personal desktop catalogs are **strictly owner-scoped**. Institutional admins have no access to any user's personal index — an important privacy property, and a deliberate departure from "admin sees all".
-- Workflow transitions are validated in the database, not only in the API.
-- Audit logs are append-only and written only by trusted server-side functions, so the actor cannot be spoofed.
-- Upload allowlist: PDF only for MVP. Maximum 25 MB at application level, below Supabase Free's 50 MB per-file limit.
-- Reject malformed or password-protected PDFs with a user-facing error.
-- Never execute or render active content from uploaded files.
-- Local indexing requires **explicit per-folder consent**; the app never reads outside selected roots.
-- Recommendations never mutate the user's filesystem.
+- Supabase Auth required for all data access; `getUser()` revalidates the token on every request rather than trusting the cookie.
+- **RLS is the authorization boundary.** Hiding a button is not authorization.
+- The browser receives only the anon key. **The service-role key and the Gemini key are server-side only** and never prefixed `NEXT_PUBLIC_`.
+- Private storage bucket; no public URLs; reads use short-lived signed URLs (300 s).
+- Upload limits enforced in **three layers**: bucket configuration, database `CHECK` constraints, and server-side validation. A client cannot weaken any of them.
+- Uploaded versions are immutable — a trigger rejects changes to identity and file columns; storage has no client `UPDATE`/`DELETE` policy.
+- Audit logs are append-only and written only inside `SECURITY DEFINER` functions, so the actor cannot be spoofed. `UPDATE`/`DELETE` are blocked by trigger at every privilege level.
+- An unauthorized document returns 404, not 403 — existence is not leaked.
+- Uploaded files are never executed or rendered as active content.
 
 ---
 
-# Operational Limits and Cost Guardrails
+# Data Model
 
-Platform facts verified against official documentation during planning:
+| Table | Purpose |
+| --- | --- |
+| `profiles` | Application identity and role, keyed to `auth.users` |
+| `departments`, `categories` | Controlled taxonomy with classifier keywords |
+| `documents` | The logical document: owner, folder, status, metadata, current version |
+| `document_versions` | Immutable uploads; processing status and extracted text |
+| `document_insights` | AI summary, key points, entities, important dates (Phase 3) |
+| `document_chunks` | Retrieval units with per-chunk `tsvector` (Phase 4–5) |
+| `document_comments` | Discussion, attributable |
+| `document_reviews` | Reviewer decisions, attributable |
+| `audit_logs` | Append-only record of meaningful actions |
+| `document_search` | Weighted `tsvector` over the document surface |
 
-- Supabase Free provides 500 MB database, 1 GB file storage, and a 50 MB maximum file-upload size.
-- Supabase PostgreSQL supports built-in full-text search and pgvector (pgvector unused in MVP).
-- Gemini API offers free-tier access to selected models, including `gemini-3.1-flash-lite` on its standard tier at time of planning.
-- Render offers free web services supporting Python and Docker, but free services spin down after 15 minutes of inactivity, so any demo service must be warmed before judging.
-
-Application guardrails:
-
-- 25 MB per PDF; roughly ≤ 100 pages for demo files.
-- AI requests only after successful extraction; batched where possible.
-- Avoid duplicate processing for unchanged content (hash-keyed).
-- Local indexing is incremental and resumable.
-- Indexing must handle permission-denied files, locked files, very large folders and symlink loops without crashing.
-- Show processing state and offer retry.
-
----
-
-# Demo Data
-
-Use synthetic documents only. No real personal or institutional data.
-
-Recommended demo set:
-
-1. University Academic Regulations / Student Handbook
-2. Procurement Policy / Tender Guidelines
-3. HR Leave & Attendance Policy
-4. Scholarship Eligibility Guidelines
-5. Internship / Placement Policy
-
-Plus, for the desktop demo, a synthetic folder tree containing `Research/`, `Policies/`, `Downloads/` and `Temporary Files/` so folder scoping and exclusions are demonstrable.
+Human metadata (`user_metadata`), platform-derived metadata (`system_metadata`) and AI output (`document_insights`) are stored **separately** so they never silently overwrite one another.
 
 ---
 
 # Success Criteria
 
-The MVP is complete when a judge can:
+A judge should be able to:
 
-1. Launch the desktop app and select folders to index.
-2. See files indexed, categorized and grouped — with no network connection.
-3. Search by content, metadata, category, tag, author and date.
-4. Restrict a search to only selected folders, and exclude others.
-5. Ask for documents similar to a selected document and get sensible results.
-6. See automatic organization recommendations with a stated reason.
-7. Sign in, and see metadata sync to the cloud without file bytes leaving the machine.
-8. In the web app, upload a document, categorize it and submit it for review.
-9. Move it through Under Review to Approved or Rejected as the appropriate role.
-10. Be refused when attempting an invalid transition or approving their own document.
-11. Open version history and see previous versions intact.
-12. Open the audit trail and see who changed what and when.
+1. Sign up, sign in, and land in a workspace.
+2. Upload a real PDF and see it stored privately.
+3. See it filed automatically into a department/category, with the matched terms and confidence shown.
+4. Browse the folder tree and open the document.
+5. See extracted text, metadata and an AI summary. *(Phase 3)*
+6. Search for a phrase inside the document body. *(Phase 4)*
+7. See related documents. *(Phase 4)*
+8. Ask a question and get an answer with a source reference. *(Phase 5)*
+9. Submit for review, and be refused when approving their own document.
+10. Sign in as an HOD, open the queue, request changes, then approve after resubmission.
+11. Upload a new version and confirm the previous version is intact.
+12. Open the audit trail and see real actions with actor and timestamp.
 
-# Critical Acceptance Criteria
-
-- Search returns correct results for the committed golden query set.
-- Folder-scope include/exclude behaves correctly, with exclude winning over include.
-- Desktop search and indexing work fully offline.
-- A user's indexed files are never transmitted while cloud backup is off.
-- Recommendations never modify the user's filesystem.
-- Unauthorized users cannot access another user's documents or personal catalog.
-- Search results are limited to what the current user is allowed to see.
-- Invalid workflow transitions are rejected by the database, not just the UI.
-- A user cannot approve or reject their own document.
-- An approved document cannot be silently modified without creating a new version.
-- Every workflow mutation creates an audit event, and audit rows cannot be edited or deleted.
-- Renaming or moving an indexed file is detected without creating a duplicate entry.
-- A scanned PDF in the web app produces searchable text via the minimal OCR path.
+Criteria 1–4 and 9–12 are implemented today. 5–8 are the remaining phases.
 
 ---
 
-# Open Questions / Non-Blocking Decisions
+# Implementation Phases
 
-- Product name can be selected once the first working flow exists.
-- Final deployment hostname is a deployment detail.
-- Sync direction in MVP is assumed one-way; confirm or override.
-- Vector-embedding similarity can be added later without changing core identity or schema shape.
-- Desktop code signing is out of scope; the demo runs from a dev build.
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 1 — Foundation | App, auth, Supabase, base schema, layout, roles | **Implemented** |
+| 2 — Core documents | Upload, storage, records, taxonomy, list, detail | **Implemented** |
+| 3 — Intelligence | Extraction, OCR fallback, metadata, classification refinement, summaries | Next |
+| 4 — Search | Full-text over extracted text, filters, similar documents | Pending |
+| 5 — Q&A | Chunk retrieval, grounded answers with citations | Pending |
+| 6 — Workflow polish | Queue refinement, notifications | Partly done (workflow itself is complete) |
+| 7 — Polish | Loading/empty/error states, responsive, demo data | Pending |
 
 ---
 
 # Current Status
 
-**Phase:** direction revised; documentation synchronized.
+**Implementation:** Phases 1 and 2 are code-complete in `frontend/` and `supabase/migrations/`.
 
-**Implementation:** **Not started.** No application code, migrations, or database objects exist.
+**Verified:** `npx tsc --noEmit` passes with zero errors. `npx next build` passes, compiling 10 routes. The dev server boots.
 
-**Architecture:** revised for the two-application custody model and finalized.
+**Not verified:** no code path that touches Supabase has been executed. Login, upload, storage, workflow transitions and audit writes are **unproven at runtime** because no Supabase project is connected.
 
-**Database:** designed at logical level in `database.md`; SQL implementation not started.
+**Blocker — required manual setup:**
 
-**API:** contract specified in `api.md`; not implemented.
+- Docker, the Supabase CLI and `psql` are **not installed** on the development machine (Node 22.20.0, npm 11.19.0 and Python 3.13.7 are present).
+- To run for real, either install Docker Desktop and run `npx supabase start`, or create a hosted Supabase free project.
+- Then apply `supabase/migrations/0001_init.sql`, `0002_security.sql`, `0003_storage.sql` and `supabase/seed/seed.sql`, and populate `frontend/.env.local` from `frontend/.env.example`.
 
-**Web app:** not started.
+**Roles for the demo:** signup creates `staff` accounts only. To demonstrate the HOD experience, promote one account with
+`update profiles set role = 'approver' where id = '<uuid>';`
 
-**Desktop app:** not started.
-
-**AI layer:** not started, and intentionally last.
-
-**Deployment:** target selected; not configured.
-
-**Local tooling gap:** Docker, the Supabase CLI and `psql` are **not installed** on the current development machine. Node 22.20.0, npm 11.19.0 and Python 3.13.7 are present. Migrations cannot be applied and database tests cannot be executed until Docker + the Supabase CLI are installed, or a hosted Supabase project is provided.
-
-## Recommended Implementation Order
-
-| Phase | Scope |
-| --- | --- |
-| **0 — Shared foundation** | Supabase project, cloud schema, RLS, Auth, private bucket, shared category/tag vocabulary, error envelope, seed data |
-| **1 — Desktop core (hero)** | Electron shell, folder selection with include/exclude, SQLite + FTS5 index, extraction, faceted folder-scoped search, ranking. Fully offline. |
-| **2 — Web governance spine (FS-05)** | Upload, metadata, categorization, workflow transitions, comments, versioning, audit, cloud search |
-| **3 — Search quality + organization** | Ranking tuned against the golden query set, lexical similarity, facet grouping recommendations, saved search profiles |
-| **4 — Identity + sync** | Desktop PKCE login, keychain token storage, device registry, opt-in metadata/category push, cloud search over synced catalog |
-| **5 — AI enhancement layer** | Metadata extraction, categorization, query understanding, summaries — all server-proxied |
-| **6 — Minimal OCR + polish + deploy** | FS-05 OCR path, empty/error/loading states, deployment, demo hardening |
-
-Phase 2 is deliberately placed before search polish so the FS-05 rubric answer exists early, even though the desktop app is the hero demo.
+**Tests:** none written yet. The security boundaries that most need coverage are RLS visibility, invalid workflow transitions, self-approval refusal, audit immutability and version-number uniqueness.

@@ -4,19 +4,78 @@
 
 ## Current Project Status
 
-- Last updated: 2026-08-22 12:00 IST
-- Current phase: Product direction revised; documentation synchronized
-- Overall status: **Documentation complete, implementation not started**
+- Last updated: 2026-08-22 13:30 IST
+- Current phase: **Implementation started** — Phase 1 (foundation) and Phase 2 (core documents)
+- Overall status: Web app builds and typechecks; runtime blocked on Supabase credentials
 - Selected problem: FS-05 Document Management
-- Product shape: **Two connected applications** — web platform + desktop application
-- Primary differentiator: **Intelligent Metadata-Driven Search**
-- MVP status: Scope finalized for both applications
+- Product shape: **ONE web application** (intelligent workspace + institutional governance)
+- Desktop application: **cancelled** — see the entry below
 - Deployment status: Not deployed
-- Blocker: Docker, Supabase CLI and `psql` are not installed locally — migrations cannot be applied and database tests cannot be run
+- Blocker: no Supabase project connected. Docker, Supabase CLI and `psql` are not installed locally.
 
 ---
 
 ## Change Log
+
+### 2026-08-22 13:30 IST — Direction change to one web app; foundation implemented
+
+#### Change
+
+**Product direction**
+
+- Removed: the separate Electron desktop application, in full. No desktop code was ever written, so nothing was discarded.
+- Added: a single web application containing both the intelligent document workspace and institutional governance.
+- Restored to MVP: OCR fallback, AI summaries, document Q&A, and similar-document discovery — all previously cut or deferred, now in scope inside the one web app.
+- Added: `changes_requested` as a first-class workflow state, giving `under_review → changes_requested → submitted`.
+- Added: automatic folder organization over a controlled two-level taxonomy (department → category), replacing free-form folders.
+
+**Implemented — database (`supabase/migrations/`)**
+
+- `0001_init.sql`: 6 enums; `profiles`, `departments`, `categories`, `documents`, `document_versions`, `document_insights`, `document_chunks`, `document_comments`, `document_reviews`, `audit_logs`, `document_search`; 20 indexes; `updated_at` triggers; `handle_new_user` trigger creating a profile on signup; weighted `tsvector` maintenance; version-immutability trigger; audit append-only triggers blocking `UPDATE`/`DELETE` at every privilege level.
+- `0002_security.sql`: RLS enabled on all 11 tables with 24 policies; `SECURITY DEFINER` role helpers (`current_app_role`, `is_admin`, `can_review`, `can_approve`, `document_is_visible`); `is_valid_transition` as the single source of truth for legal transitions; `guard_workflow_transition` trigger rejecting illegal state pairs even via direct SQL; `transition_document`, `create_document_version` and `log_audit_event` RPCs.
+- `0003_storage.sql`: private `documents` bucket (25 MB cap, PDF/PNG/JPEG allowlist) with object policies joining the leading path segment back to document visibility. No client `UPDATE`/`DELETE`, so stored files are immutable per version.
+- `seed/seed.sql`: 5 departments, 15 categories, each with classifier keywords. Idempotent.
+
+**Implemented — web application (`frontend/`)**
+
+- Next.js 15.5 App Router, React 19, TypeScript strict, Tailwind v4.
+- Auth: cookie-based sessions via `@supabase/ssr`; login, signup, signout; middleware that revalidates the token with `getUser()` on every request and gates protected routes.
+- Role foundations: `staff` / `reviewer` / `approver` / `admin`, resolved server-side; role-driven navigation and a role-gated review queue.
+- Upload pipeline: server-side validation → private storage upload under the document's own prefix → `create_document_version` RPC (server-assigned version number) → audit event. Rolls back the draft row and the stored object if any step fails.
+- Automatic organization: deterministic keyword classifier scoring category keywords against title and filename, storing `category_source` and `category_confidence` so the UI can show why a document was filed where it was.
+- Screens: workspace with folder tree, upload, search with filters, document detail (metadata, preview, comments, versions, review history, audit trail), review queue, not-found.
+- Workflow UI: only offers transitions the user could plausibly perform; every rule is re-checked in the database.
+
+#### Reason
+
+The two-application split doubled the surface area against a fixed 24-hour budget and separated the intelligence features from the governance features that make them valuable institutionally. One web app keeps a single identity model, a single data model and a single demo narrative.
+
+#### Impact
+
+- Phases 1 and 2 of the implementation plan are code-complete.
+- Phase 3 (extraction, OCR, metadata, summaries) is the next slice. `document_versions.processing_status`, `document_insights` and `document_chunks` already exist to receive it.
+- Search currently covers title and description only. `document_search` and its weighted `tsvector` are in place, so full-text search over extracted text is a query change, not a schema change.
+
+#### Verification status
+
+| Item | Status |
+| --- | --- |
+| `npx tsc --noEmit` | **Passes**, zero errors |
+| `npx next build` | **Passes**, 10 routes compiled |
+| Dev server boots | **Yes** |
+| Login / upload / storage / workflow at runtime | **NOT VERIFIED** — no Supabase project connected |
+| Migrations applied | **NO** — Docker and Supabase CLI are not installed |
+| Automated tests | **None written yet** |
+
+Nothing above is claimed to work end-to-end. The code paths call real Supabase APIs with no mocks and no placeholder data, but they have not been executed against a live database.
+
+#### Status
+
+- [x] Planned
+- [x] Implemented — Phases 1 and 2
+- [ ] Tested — blocked on a Supabase project
+- [ ] Deployed
+
 
 ### 2026-08-22 12:00 IST — Product direction revised: two-application platform, search as hero feature
 
