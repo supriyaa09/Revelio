@@ -7,19 +7,111 @@
 - Last updated: 2026-08-23
 - Project name: **Revelio**
 - Current phase: **Phase 3 implemented** (extraction, OCR, AI, chunks). Phase 4 (search) is next.
-- Overall status: Typechecks, builds, 28/28 processing tests pass; `0007` awaits execution
+- Overall status: Typechecks, builds (11 routes), 43/43 processing tests pass; `0001`–`0007` applied
 - Selected problem: FS-05 Document Management
 - Product shape: **ONE web application** (intelligent workspace + institutional governance)
 - Roles: **`student`, `faculty`, `hod`** — three only, no admin
 - Workflow: `draft → submitted → faculty_review | hod_review → approved / rejected / changes_requested`
+- AI provider: **Anthropic Claude** (`claude-opus-5`), server-side only
 - Deployment status: Not deployed
-- Blocker: apply `0007_processing.sql`; optionally set `GEMINI_API_KEY` for AI analysis
+- Blocker: **the `ANTHROPIC_API_KEY` in `.env.local` is rejected `401` by both `api.anthropic.com` and the `ANTHROPIC_BASE_URL` gateway currently set in the shell.** Supply a valid `sk-ant-…` key and unset `ANTHROPIC_BASE_URL`, then run `npm run probe:ai`.
 
 ---
 
 ## Change Log
 
+### 2026-08-23 — Switch AI provider from Gemini to Anthropic Claude
+
+#### Change
+
+**Added**
+
+- `frontend/src/lib/processing/analyze.ts` — Claude integration. `@anthropic-ai/sdk`, model `claude-opus-5` (overridable with `ANTHROPIC_MODEL`), structured outputs via `output_config.format` (`type: 'json_schema'`), adaptive thinking at `effort: 'medium'`, `max_tokens: 16_000`. Replaces `gemini.ts`; see ADR-034 and ADR-037.
+- `frontend/scripts/probe-ai.mts` + `npm run probe:ai` — live provider probe against a synthetic institutional circular. Asserts the structured contract field by field and reports the endpoint and key prefix in use, never the key.
+- **15 new tests** in `scripts/test-processing.mts` covering the AI layer: response-schema subset conformance, enum-constrained taxonomy, and the whole of `coerce()`. **28 → 43 tests.**
+- `ANTHROPIC_MODEL` as an optional override.
+- A once-per-process warning when `ANTHROPIC_BASE_URL` is set (ADR-038).
+- A module-level throw in `analyze.ts` if it is ever imported into a client bundle.
+
+**Removed**
+
+- `frontend/src/lib/processing/gemini.ts`.
+- `@google/genai` dependency.
+- `GEMINI_API_KEY` and `GEMINI_MODEL` — no longer read anywhere.
+- `temperature: 0.1` — sampling parameters return a 400 on Claude Opus 5.
+
+**Modified**
+
+- `pipeline.ts` — one import line, plus comments now describing the two-layer taxonomy guarantee and the fallback story.
+- `documents/[id]/page.tsx` — the "no AI analysis stored" message names `ANTHROPIC_API_KEY`.
+- `0007_processing.sql` — one comment; `p_source` documentation is now provider-neutral. **No schema, RPC, policy or grant change.**
+- `.env.example` — `ANTHROPIC_API_KEY` plus the optional model override, and two corrections (below).
+- `docs/context.md`, `docs/decisions.md`, `docs/architecture.md`, `README.md`, `docs/README.md`.
+
+**Dependencies:** `+ @anthropic-ai/sdk@0.120.0`, `− @google/genai`. Net one package; **no `zod`** — the raw JSON Schema path does not need it.
+
+**Not changed, deliberately:** the structured contract (`summary`, `key_points`, `entities`, `important_dates`, classification), the `AiOutcome` failure protocol, `coerce()`'s clamping, the processing state machine, version-scoped insights (ADR-032), provenance-as-a-parameter (ADR-031), the deterministic keyword classifier fallback, RLS, grants, storage policies, the workflow, and the roles model. **No service-role key was introduced.**
+
+#### Structured JSON handling: what the API forced to change
+
+| Concern | Gemini | Claude |
+| --- | --- | --- |
+| Schema parameter | `config.responseSchema` + `responseMimeType` | `output_config.format` — GA, **no beta header** |
+| Nullable fields | `nullable: true` | not in the supported subset → `anyOf` with `{type:'null'}`, or an `enum` containing `null` |
+| Objects | — | **must** carry `additionalProperties: false` |
+| Array/number bounds | — | `maxItems`, `minimum`, `maxLength` unsupported → bounds stay in `coerce()` |
+| Reading the output | `response.text` | narrow `response.content[]` to the `text` block |
+| `JSON.parse` → `coerce()` | — | **unchanged** |
+
+#### Three honesty improvements, not just a port
+
+1. **`REFUSED` is a new failure reason.** A safety refusal (`stop_reason: 'refusal'`) is a real outcome, not a malformed one, and `max_tokens` truncation is now named rather than surfacing as a JSON syntax error at some byte offset. Both fall through to the keyword classifier.
+2. **The taxonomy is enforced in the schema, not only resolved afterwards** — `enum` of the real slugs plus `null`, so an invented slug is unrepresentable rather than merely discarded. Database resolution stays as the layer that cannot fail open. ADR-036.
+3. **Every key is `required` with `null` as the explicit unknown.** An omitted optional field is indistinguishable from a field the model had nothing to say about. ADR-035.
+
+#### Two defects found while inspecting, both fixed
+
+**1. `.env.example` would not boot a fresh clone.** It specified `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, but [env.ts](../frontend/src/lib/env.ts) and the working `.env.local` both read `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Reverted to the name the code actually reads.
+
+**2. Its `SUPABASE_SERVICE_ROLE_KEY` comment was false.** It claimed the key "is used only by the document-processing pipeline". The pipeline writes through `SECURITY DEFINER` RPCs precisely so that no service-role key is needed, and none exists in this deployment. The comment now says the key is optional and only used by `diagnose-upload.mjs`.
+
+**One hardening while adding coverage:** `coerce()` accepted a non-finite confidence, because `typeof NaN === 'number'` and `Math.max(0, Math.min(1, NaN))` is `NaN`. That would have reached the numeric `category_confidence` column and the AI badge percentage. Now `Number.isFinite`, with a test.
+
+#### Verification status
+
+| Item | Status |
+| --- | --- |
+| `npm run typecheck` | **Passes**, zero errors |
+| `npm run build` | **Passes**, 11 routes |
+| `npm run test:processing` | **43 passed, 0 failed** (was 28) |
+| No Gemini references remain in source or docs | **Verified** by grep |
+| Request reaches the provider and a real HTTP response is parsed | **Verified** — `npm run probe:ai` |
+| Failure path maps to `API_ERROR` with actionable detail | **Verified** — reported `Error 401: 401 UNAUTHENTICATED` |
+| **A successful Claude analysis** | **NOT VERIFIED — blocked on the credential** |
+| End-to-end upload → process → insights | **NOT VERIFIED** |
+
+**Why the live call is unverified.** The `ANTHROPIC_API_KEY` in `.env.local` is `sk-ZliX8…` (51 chars). An Anthropic key starts `sk-ant-`. Probed directly:
+
+```text
+api.anthropic.com   HTTP 401  {"type":"authentication_error","message":"API key is invalid."}
+agentrouter.org     HTTP 401  {"type":"unauthorized_client_error","message":"UNAUTHENTICATED"}
+```
+
+`ANTHROPIC_BASE_URL=https://agentrouter.org` is set **in the shell environment, not in `.env.local`**, so it silently redirected the call to a third-party router — which would also happen to `next dev` and `next build`, sending institutional document text there. That is now warned about at call time and in the probe (ADR-038), and is the reason that ADR exists.
+
+Everything up to the auth boundary is proven: the request is built, sent, answered, and the failure is mapped honestly and degraded to keyword classification. Only the authenticated round trip is outstanding, and it needs a valid key rather than a code change.
+
+#### Status
+
+- [x] Planned
+- [x] Implemented
+- [~] Tested — schema, coercion and failure contract yes (43/43); one successful live analysis outstanding
+- [ ] Deployed
+
+
 ### 2026-08-23 — Phase 3: real document intelligence (extraction, OCR, AI, chunks)
+
+> **Partly superseded by the provider switch above.** Everything here still holds except the AI module: `gemini.ts` / `@google/genai` / `GEMINI_API_KEY` were replaced by `analyze.ts` / `@anthropic-ai/sdk` / `ANTHROPIC_API_KEY` later the same day. The record below is left as written, since the four defects and the reasoning that produced this design are what made the swap a one-module change.
 
 #### Change
 

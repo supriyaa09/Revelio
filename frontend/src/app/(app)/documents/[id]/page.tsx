@@ -286,7 +286,7 @@ export default async function DocumentDetailPage({
                 ) : (
                   <p className="mt-3 text-sm text-slate-500">
                     Text was extracted, but no AI analysis is stored for this version. This happens
-                    when no <code className="text-xs">GEMINI_API_KEY</code> is configured, or the
+                    when no <code className="text-xs">ANTHROPIC_API_KEY</code> is configured, or the
                     provider call failed. Nothing is shown in place of it.
                   </p>
                 )}

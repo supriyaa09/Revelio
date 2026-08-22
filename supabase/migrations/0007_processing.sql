@@ -215,11 +215,11 @@ grant execute on function save_document_chunks(uuid, jsonb) to authenticated;
 -- Human choices always win: a category the user picked is never overwritten.
 --
 -- p_source records WHICH engine produced the suggestion. It must be supplied by
--- the caller, because two different engines call this function: Gemini ('ai')
--- and the deterministic keyword classifier ('system'). Hardcoding 'ai' would
--- label keyword matching as model output in both the UI badge and the audit
--- trail — a provenance lie, and exactly what the "no fabricated AI output" rule
--- forbids.
+-- the caller, because two different engines call this function: the AI provider
+-- ('ai') and the deterministic keyword classifier ('system'). Hardcoding 'ai'
+-- would label keyword matching as model output in both the UI badge and the
+-- audit trail — a provenance lie, and exactly what the "no fabricated AI output"
+-- rule forbids.
 create or replace function apply_ai_metadata(
   p_document_id   uuid,
   p_document_type text default null,

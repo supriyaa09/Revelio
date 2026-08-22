@@ -2,8 +2,9 @@
  * Phase 3 processing tests.
  *
  * Exercises the pure pipeline modules (extraction, OCR fallback decision, OCR,
- * chunking) against genuinely constructed fixtures. No database and no network
- * are required, so this is runnable and repeatable.
+ * chunking) plus the AI layer's schema and coercion against genuinely
+ * constructed fixtures. No database and no network are required, so this is
+ * runnable and repeatable.
  *
  *   node --experimental-strip-types scripts/test-processing.mts
  */
@@ -21,6 +22,7 @@ import {
 } from '../src/lib/processing/extract.ts';
 import { ocrImage } from '../src/lib/processing/ocr.ts';
 import { chunkPages, CHUNK_CHARS, MAX_CHUNKS } from '../src/lib/processing/chunk.ts';
+import { analyseDocument, buildAnalysisSchema, coerce } from '../src/lib/processing/analyze.ts';
 
 // ── PDF construction with a real xref table ─────────────────────────────────
 function buildPdf(objects: Buffer[]): Buffer {
@@ -485,6 +487,224 @@ await test('homogeneous text advances even though chunks repeat', () => {
   assert.ok(chunks.length < 20, `expected ~9 chunks, got ${chunks.length} (loop not advancing)`);
   chunks.forEach((c, i) => assert.equal(c.chunk_index, i));
 });
+
+console.log('\n=== 8. AI analysis layer (schema + coercion, no network) ===');
+
+// The structured-outputs JSON Schema subset. A violation is a 400 from the API
+// at runtime, on the first real upload — so it is asserted here instead.
+const SUPPORTED_FORMATS = new Set([
+  'date-time', 'time', 'date', 'duration', 'email',
+  'hostname', 'uri', 'ipv4', 'ipv6', 'uuid',
+]);
+const UNSUPPORTED_KEYWORDS = [
+  'nullable', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+  'multipleOf', 'minLength', 'maxLength', 'pattern', 'maxItems',
+];
+
+/** Walks every schema node, reporting the JSON path of each violation. */
+function schemaViolations(node: unknown, path = '$'): string[] {
+  if (Array.isArray(node)) {
+    return node.flatMap((n, i) => schemaViolations(n, `${path}[${i}]`));
+  }
+  if (node === null || typeof node !== 'object') return [];
+
+  const o = node as Record<string, unknown>;
+  const out: string[] = [];
+
+  for (const kw of UNSUPPORTED_KEYWORDS) {
+    if (kw in o) out.push(`${path}.${kw} is outside the supported subset`);
+  }
+  if ('minItems' in o && o.minItems !== 0 && o.minItems !== 1) {
+    out.push(`${path}.minItems must be 0 or 1, got ${String(o.minItems)}`);
+  }
+  if (typeof o.format === 'string' && !SUPPORTED_FORMATS.has(o.format)) {
+    out.push(`${path}.format "${o.format}" is not a supported string format`);
+  }
+  if (o.type === 'object' && o.additionalProperties !== false) {
+    out.push(`${path} is an object without additionalProperties: false`);
+  }
+  if (Array.isArray(o.enum) && o.enum.length === 0) {
+    out.push(`${path}.enum is empty, which is not a valid schema`);
+  }
+
+  for (const [key, value] of Object.entries(o)) {
+    if (key === 'enum' || key === 'required' || key === 'const') continue;
+    out.push(...schemaViolations(value, `${path}.${key}`));
+  }
+  return out;
+}
+
+const DEPT_SLUGS = ['academic', 'administration', 'finance', 'hr', 'procurement'];
+const CAT_SLUGS = ['notices', 'reports', 'policies', 'budgets', 'invoices'];
+
+await test('response schema stays inside the structured-outputs subset', () => {
+  const violations = schemaViolations(buildAnalysisSchema(DEPT_SLUGS, CAT_SLUGS));
+  assert.deepEqual(violations, [], `schema violations:\n  ${violations.join('\n  ')}`);
+});
+
+await test('every top-level field is required, so nothing can be silently omitted', () => {
+  const schema = buildAnalysisSchema(DEPT_SLUGS, CAT_SLUGS) as {
+    required: string[];
+    properties: Record<string, unknown>;
+  };
+  assert.deepEqual(
+    [...schema.required].sort(),
+    Object.keys(schema.properties).sort(),
+    'a property is not in required: the model could omit it instead of returning null',
+  );
+});
+
+await test('taxonomy slugs are constrained by enum, with null permitted', () => {
+  const schema = buildAnalysisSchema(DEPT_SLUGS, CAT_SLUGS) as {
+    properties: { category_slug: { enum?: unknown[] }; department_slug: { enum?: unknown[] } };
+  };
+  assert.deepEqual(schema.properties.category_slug.enum, [...CAT_SLUGS, null]);
+  assert.deepEqual(schema.properties.department_slug.enum, [...DEPT_SLUGS, null]);
+});
+
+await test('an unseeded taxonomy degrades to a nullable string, not an empty enum', () => {
+  const schema = buildAnalysisSchema([], []) as {
+    properties: { category_slug: Record<string, unknown> };
+  };
+  assert.ok(!('enum' in schema.properties.category_slug), 'emitted an invalid empty enum');
+  assert.deepEqual(schemaViolations(schema), []);
+});
+
+await test('duplicate slugs are de-duplicated in the enum', () => {
+  const schema = buildAnalysisSchema(['finance', 'finance'], ['policies', 'policies', '']) as {
+    properties: { category_slug: { enum: unknown[] }; department_slug: { enum: unknown[] } };
+  };
+  assert.deepEqual(schema.properties.department_slug.enum, ['finance', null]);
+  assert.deepEqual(schema.properties.category_slug.enum, ['policies', null]);
+});
+
+await test('coerce clamps confidence into 0..1', () => {
+  assert.equal(coerce({ confidence: 4.2 }).confidence, 1);
+  assert.equal(coerce({ confidence: -3 }).confidence, 0);
+  assert.equal(coerce({ confidence: 0.62 }).confidence, 0.62);
+});
+
+await test('coerce rejects a non-finite confidence rather than storing NaN', () => {
+  // typeof NaN === 'number', and clamping NaN yields NaN, so this would reach
+  // the numeric confidence column and the AI badge percentage.
+  assert.equal(coerce({ confidence: NaN }).confidence, 0);
+  assert.equal(coerce({ confidence: Infinity }).confidence, 0);
+  assert.equal(coerce({ confidence: '0.9' }).confidence, 0);
+});
+
+await test('coerce drops dates that are not ISO YYYY-MM-DD', () => {
+  const a = coerce({
+    document_date: '30 September 2026',
+    important_dates: [
+      { label: 'Last date', date: '2026-09-30', is_deadline: true },
+      { label: 'Vague', date: 'next Tuesday', is_deadline: true },
+      { label: 'Partial', date: '2026-09', is_deadline: false },
+    ],
+  });
+  assert.equal(a.document_date, null, 'accepted a non-ISO document_date');
+  assert.equal(a.important_dates.length, 1, 'kept an unparseable date');
+  assert.equal(a.important_dates[0]!.date, '2026-09-30');
+});
+
+await test('coerce treats is_deadline as true only for a literal true', () => {
+  const a = coerce({
+    important_dates: [
+      { label: 'A', date: '2026-01-01', is_deadline: 'yes' },
+      { label: 'B', date: '2026-01-02', is_deadline: 1 },
+      { label: 'C', date: '2026-01-03', is_deadline: true },
+    ],
+  });
+  assert.deepEqual(a.important_dates.map((d) => d.is_deadline), [false, false, true]);
+});
+
+await test('coerce drops entities with no name and defaults a missing type', () => {
+  const a = coerce({
+    entities: [{ name: 'Registrar', type: 'role' }, { type: 'org' }, { name: '  ' }, { name: 'Finance' }],
+  });
+  assert.deepEqual(a.entities, [
+    { name: 'Registrar', type: 'role' },
+    { name: 'Finance', type: 'unknown' },
+  ]);
+});
+
+await test('coerce bounds every array', () => {
+  const a = coerce({
+    tags: Array.from({ length: 50 }, (_, i) => `tag-${i}`),
+    key_points: Array.from({ length: 50 }, (_, i) => `point ${i}`),
+    entities: Array.from({ length: 90 }, (_, i) => ({ name: `E${i}`, type: 'x' })),
+    important_dates: Array.from({ length: 90 }, (_, i) => ({
+      label: `D${i}`,
+      date: '2026-01-01',
+      is_deadline: false,
+    })),
+  });
+  assert.equal(a.tags.length, 12);
+  assert.equal(a.key_points.length, 12);
+  assert.equal(a.entities.length, 40);
+  assert.equal(a.important_dates.length, 25);
+});
+
+await test('coerce turns blank strings into null, never empty output rendered as content', () => {
+  const a = coerce({ summary: '   ', document_type: '', category_slug: '\n\t', tags: ['', '  ', 'real'] });
+  assert.equal(a.summary, null);
+  assert.equal(a.document_type, null);
+  assert.equal(a.category_slug, null);
+  assert.deepEqual(a.tags, ['real']);
+});
+
+await test('coerce survives structurally wrong input without throwing', () => {
+  for (const junk of [null, undefined, 'a string', 42, [], { entities: 'nope', tags: {} }]) {
+    const a = coerce(junk);
+    assert.equal(a.summary, null);
+    assert.deepEqual(a.tags, []);
+    assert.deepEqual(a.entities, []);
+    assert.deepEqual(a.important_dates, []);
+    assert.equal(a.confidence, 0);
+  }
+});
+
+// ── failure contract, proven without a network call ─────────────────────────
+const savedKey = process.env.ANTHROPIC_API_KEY;
+const TAXONOMY_ARGS = {
+  departments: DEPT_SLUGS.map((slug) => ({ slug, name: slug })),
+  categories: CAT_SLUGS.map((slug) => ({
+    slug,
+    name: slug,
+    description: null,
+    department_slug: 'academic',
+  })),
+};
+
+await test('analyseDocument reports NO_API_KEY instead of inventing analysis', async () => {
+  delete process.env.ANTHROPIC_API_KEY;
+  const r = await analyseDocument({
+    text: 'A'.repeat(500),
+    title: 'Budget',
+    filename: 'b.pdf',
+    ...TAXONOMY_ARGS,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'NO_API_KEY');
+  assert.equal(r.analysis, null, 'returned an analysis with no provider configured');
+});
+
+await test('analyseDocument reports NO_TEXT before spending an API call', async () => {
+  // A key is present, so reaching NO_TEXT proves the guard runs before the
+  // provider call — an empty document never costs a request.
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-not-a-real-key-for-tests';
+  const r = await analyseDocument({
+    text: '  short  ',
+    title: 'Empty',
+    filename: 'e.pdf',
+    ...TAXONOMY_ARGS,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'NO_TEXT');
+  assert.equal(r.analysis, null);
+});
+
+if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+else process.env.ANTHROPIC_API_KEY = savedKey;
 
 console.log(`\n${'='.repeat(56)}`);
 console.log(`  ${pass} passed, ${fail} failed`);

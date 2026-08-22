@@ -11,7 +11,7 @@ import {
 } from './extract';
 import { MAX_OCR_PAGES, MIN_OCR_CONFIDENCE, ocrImage, ocrImages } from './ocr';
 import { chunkPages } from './chunk';
-import { analyseDocument } from './gemini';
+import { analyseDocument } from './analyze';
 
 export type Stage = 'uploaded' | 'extracting' | 'analyzing' | 'indexing' | 'ready' | 'failed';
 export type ExtractionMethod = 'text' | 'ocr' | 'mixed';
@@ -256,8 +256,9 @@ export async function processVersion(
     if (insightErr) console.error('[process] save_document_insights:', insightErr.message);
     else aiApplied = true;
 
-    // AI-chosen folder, resolved against the real taxonomy by slug so a
-    // hallucinated name simply resolves to nothing.
+    // AI-chosen folder, resolved against the real taxonomy by slug. The schema
+    // already constrains the slug to the seeded set, and this second check
+    // means a hallucinated name would still resolve to nothing.
     const aiCat = a.category_slug
       ? catList.find(
           (c) =>
@@ -285,7 +286,9 @@ export async function processVersion(
 
     // Deterministic content-based classification still runs. This is the
     // upgrade over the old title/filename-only pass, and it is honest: it is
-    // keyword matching, recorded as such, not presented as AI output.
+    // keyword matching, recorded as such, not presented as AI output. It is
+    // also the whole fallback story when Claude is unavailable, refuses, or
+    // returns something malformed.
     if (fullText.length > 0) {
       const result = classify(catList, {
         title: documentTitle,

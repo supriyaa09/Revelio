@@ -9,7 +9,7 @@ Build **two connected applications** over one identity system and one metadata v
 1. **Web platform** — Next.js (App Router) / TypeScript / Tailwind. Institutional document workflow. Satisfies FS-05.
 2. **Desktop application** — Electron + TypeScript, local index on SQLite + FTS5. Intelligent document organization and search. **Primary demo.**
 3. **Supabase** — Auth + PostgreSQL + Storage + RLS. Single identity provider for both apps.
-4. **Gemini API** — server-side only, as an enhancement layer.
+4. **Anthropic Claude API** — server-side only, as an enhancement layer.
 
 Do **not** deploy Elasticsearch. Do **not** enable pgvector in MVP.
 
@@ -66,7 +66,7 @@ Architectural consequences:
                                          │ server-side only
                                          v
                               ┌────────────────────┐
-                              │  Gemini API        │
+                              │  Claude API        │
                               │ (enhancement only) │
                               └────────────────────┘
 
@@ -118,7 +118,7 @@ Runs server-side **as the signed-in user**, so RLS applies to every query. Owns:
 - Private PDF storage
 - Workflow transition enforcement via `SECURITY DEFINER` functions and constraints
 
-### AI enhancement layer (Gemini, server-side)
+### AI enhancement layer (Claude, server-side)
 
 - Metadata extraction
 - Categorization
@@ -213,7 +213,7 @@ Future Drive mode authenticates with Google, leaves files in Drive, and reads me
 
 - Web: free static/SSR host (Vercel or Render).
 - Supabase: Free project.
-- Gemini: free-tier model.
+- Claude: metered API usage; `claude-opus-5` by default, overridable with `ANTHROPIC_MODEL`.
 - Desktop: **dev build for the demo.** Code signing is out of scope; unsigned installers trigger SmartScreen/Gatekeeper warnings, so judges should not be asked to install one.
 
 ## Build order

@@ -56,7 +56,7 @@ Searchable by file name, metadata, content, category, tags, author, date and **f
 | Authorization | PostgreSQL Row Level Security |
 | Cloud search | PostgreSQL full-text search |
 | Similarity | Lexical (BM25/TF-IDF); embeddings reserved as a stretch extension point |
-| AI | Gemini API, server-side only |
+| AI | Anthropic Claude API, server-side only |
 
 ## Architecture
 
@@ -116,7 +116,7 @@ Database, RLS and storage tests cannot be executed until Docker + the Supabase C
 
 - Web: free static/SSR host (Vercel or Render)
 - Data/auth/storage: Supabase Free
-- AI: Gemini free-tier model
+- AI: Anthropic Claude (`claude-opus-5` by default)
 - Desktop: **dev build for the demo.** Code signing is out of scope; unsigned installers trigger SmartScreen/Gatekeeper warnings, so judges should not be asked to install one.
 
 ## Team

@@ -20,7 +20,7 @@
 | Storage | Supabase Storage, private `documents` bucket |
 | Authorization | PostgreSQL Row Level Security |
 | Search | PostgreSQL full-text search (weighted `tsvector`) |
-| AI | Gemini, server-side only, from Phase 3 |
+| AI | **Anthropic Claude**, server-side only, from Phase 3 |
 | OCR | `tesseract.js` fallback, for scanned/image documents only |
 | PDF text | `unpdf` (bundled pdfjs), per page |
 | Current phase | **Phase 3 implemented** (extraction, OCR, AI, chunks). Phase 4 (search) is next. |
@@ -69,7 +69,7 @@ AI is an **enhancement layer**, not the product. It extracts metadata, classifie
 | Document records | Title, description, owner, folder, status, tags, metadata, versions |
 | **PDF text extraction** | `unpdf`, per page, with page count and char count |
 | **OCR fallback** | `tesseract.js` on rasterised pages; `text` / `ocr` / `mixed` recorded |
-| **AI analysis** | Gemini, JSON-only: summary, key points, entities, dates, deadlines |
+| **AI analysis** | Claude, JSON-only: summary, key points, entities, dates, deadlines |
 | **Automatic organization** | Content-based classification with confidence and matched terms |
 | **Retrieval chunks** | `document_chunks` with page ranges and per-chunk `tsvector` |
 | **Processing UX** | Real stages polled from the database, with retry |
@@ -103,7 +103,7 @@ Runs in the Next.js Node runtime. **No Python service** — `PyMuPDF` was consid
 | PDF text | `unpdf` (bundled pdfjs), extracted **per page** so chunks carry real page ranges |
 | OCR | `tesseract.js`, English traineddata |
 | Rasterisation | `unpdf.renderPageAsImage` with an injected `@napi-rs/canvas` |
-| AI | Gemini via `@google/genai`, JSON-only with a response schema |
+| AI | Claude via `@anthropic-ai/sdk`, JSON-only with a structured-output schema |
 | Trigger | `POST /api/documents/:id/process`, runs as the signed-in user |
 | Persistence | `SECURITY DEFINER` RPCs in `0007_processing.sql` |
 
@@ -128,13 +128,20 @@ Uploaded images (PNG/JPEG) have no text layer by definition, so they go straight
 
 ## AI analysis
 
-Gemini is called with `responseMimeType: 'application/json'` plus an explicit `responseSchema`, so the output is structured by construction rather than parsed out of prose. It extracts `document_type`, `department`, `category`, `tags`, `summary`, `key_points`, `entities`, `important_dates` (with a `is_deadline` flag) and `document_date`.
+Claude is called with `output_config.format` set to a `json_schema` (structured outputs, GA — no beta header), so the output is structured by construction rather than parsed out of prose. It extracts `document_type`, `department`, `category`, `tags`, `summary`, `key_points`, `entities`, `important_dates` (with a `is_deadline` flag) and `document_date`.
 
-Three anti-hallucination measures:
+Model is `claude-opus-5`, overridable with `ANTHROPIC_MODEL`. Adaptive thinking is on with `effort: 'medium'`; `max_tokens` is 16,000 because thinking tokens are spent before the JSON is emitted. **No `temperature`** — sampling parameters are rejected on Opus 5.
 
-1. The model may only choose a **department/category slug from the actual seeded taxonomy**. A slug it invents resolves to nothing and is discarded.
-2. The parsed response is re-validated and clamped in `coerce()` — dates must match `YYYY-MM-DD`, arrays are bounded, confidence is clamped to 0–1.
-3. Every failure path returns `ok: false` with a machine-readable reason (`NO_API_KEY`, `NO_TEXT`, `API_ERROR`, `MALFORMED_OUTPUT`). **Nothing is displayed as AI output unless it was really generated and stored.**
+Four anti-hallucination measures:
+
+1. The model may only choose a **department/category slug from the actual seeded taxonomy**, enforced twice: the schema constrains the field to an `enum` of the real slugs plus `null`, so an invented slug cannot be emitted; and `pipeline.ts` still resolves the slug against the database, so the guarantee survives even if the enum is dropped.
+2. **Every key is `required`**, with `null` as the explicit "unknown" value. An optional field could be omitted silently, which is indistinguishable from "the document said nothing".
+3. The parsed response is re-validated and clamped in `coerce()` — dates must match `YYYY-MM-DD`, arrays are bounded, confidence is clamped to 0–1 and rejected if non-finite.
+4. Every failure path returns `ok: false` with a machine-readable reason (`NO_API_KEY`, `NO_TEXT`, `API_ERROR`, `MALFORMED_OUTPUT`, `REFUSED`). **Nothing is displayed as AI output unless it was really generated and stored.**
+
+`REFUSED` exists because a safety refusal (`stop_reason: 'refusal'`) is a real outcome, not a malformed one. `max_tokens` truncation is likewise named rather than surfacing as a JSON syntax error at some byte offset.
+
+`ANTHROPIC_BASE_URL` is honoured silently by the SDK, which on a document platform would mean routing institutional text to a third party without anyone choosing it in code. `analyze.ts` logs a warning once per process when it is set. The override is respected; it is just never invisible.
 
 ## Automatic organization
 
@@ -295,7 +302,7 @@ Three independent layers, so the UI is never the security boundary:
 
 - Supabase Auth required for all data access; `getUser()` revalidates the token on every request rather than trusting the cookie.
 - **RLS is the authorization boundary.** Hiding a button is not authorization.
-- The browser receives only the anon key. **The service-role key and the Gemini key are server-side only** and never prefixed `NEXT_PUBLIC_`.
+- The browser receives only the anon key. **The service-role key and the `ANTHROPIC_API_KEY` are server-side only** and never prefixed `NEXT_PUBLIC_`. `processing/analyze.ts` throws if it is ever imported into a client bundle, so this is enforced rather than trusted.
 - Private storage bucket; no public URLs; reads use short-lived signed URLs (300 s).
 - Upload limits enforced in **three layers**: bucket configuration, database `CHECK` constraints, and server-side validation. A client cannot weaken any of them.
 - Uploaded versions are immutable — a trigger rejects changes to identity and file columns; storage has no client `UPDATE`/`DELETE` policy.
@@ -351,7 +358,7 @@ Criteria 1–4 and 9–12 are implemented today. 5–8 are the remaining phases.
 | --- | --- | --- |
 | 1 — Foundation | App, auth, Supabase, base schema, layout, roles | **Implemented** |
 | 2 — Core documents | Upload, storage, records, taxonomy, list, detail | **Implemented** |
-| 3 — Intelligence | Extraction, OCR fallback, metadata, classification refinement, summaries | Next |
+| 3 — Intelligence | Extraction, OCR fallback, metadata, classification refinement, summaries | **Implemented** |
 | 4 — Search | Full-text over extracted text, filters, similar documents | Pending |
 | 5 — Q&A | Chunk retrieval, grounded answers with citations | Pending |
 | 6 — Workflow polish | Queue refinement, notifications | Partly done (workflow itself is complete) |
@@ -361,13 +368,13 @@ Criteria 1–4 and 9–12 are implemented today. 5–8 are the remaining phases.
 
 # Current Status
 
-**Implementation:** Phases 1 and 2 are code-complete in `frontend/` and `supabase/migrations/`.
+**Implementation:** Phases 1, 2 and 3 are code-complete in `frontend/` and `supabase/migrations/`.
 
-**Verified:** `npx tsc --noEmit` passes with zero errors. `npx next build` passes, compiling 10 routes. The dev server boots.
+**Verified:** `npm run typecheck` passes with zero errors. `npm run build` passes, compiling 11 routes. `npm run test:processing` passes 43/43. The dev server boots.
 
-**Not verified:** the student upload path end to end. It is blocked on `supabase/migrations/0005_fix_search_trigger.sql` (see below).
+**Not verified:** the student upload path end to end, and the live Claude call. The Claude integration is proven up to the auth boundary — it builds the request, receives a real HTTP response, and maps the failure honestly — but `ANTHROPIC_API_KEY` in `.env.local` is rejected `401` by both `api.anthropic.com` ("API key is invalid.") and the `ANTHROPIC_BASE_URL` gateway currently set in the shell. See `npm run probe:ai`.
 
-**Live environment:** a hosted Supabase project is connected via `frontend/.env.local`. Auth, profile provisioning and the authenticated student workspace all work against it. Migrations `0001`–`0004` are applied.
+**Live environment:** a hosted Supabase project is connected via `frontend/.env.local`. Auth, profile provisioning and the authenticated student workspace all work against it. Migrations `0001`–`0007` are applied.
 
 **Migration order:**
 
@@ -378,7 +385,7 @@ Criteria 1–4 and 9–12 are implemented today. 5–8 are the remaining phases.
 0004_profile_backfill.sql  orphaned-profile repair, ensure_profile()
 0005_fix_search_trigger.sql  applied
 0006_table_grants.sql        applied
-0007_processing.sql          <-- NOT YET APPLIED; Phase 3 processing RPCs
+0007_processing.sql          applied; Phase 3 processing RPCs
 seed.sql                 taxonomy (departments + categories) — applied
 ```
 
@@ -400,7 +407,7 @@ PostgreSQL checks privileges **before** RLS, so a correct policy is unreachable 
 
 **Error visibility:** unmapped database errors are no longer collapsed into a generic message. `mapDbError()` returns the real SQLSTATE and message; `logAndMap()` writes `message`/`details`/`hint` to the server log under a named step. Hiding the real error previously turned a one-line trigger bug into a blind hunt.
 
-**Diagnostics:** `frontend/scripts/probe-schema.mjs` checks every table, RPC and the storage bucket using the anon key only. `frontend/scripts/probe-grants.mjs` discriminates a grant failure (`42501`) from RLS row-filtering and prints the raw SQLSTATE, message and hint. `frontend/scripts/diagnose-upload.mjs` replays all five upload steps as a real user.
+**Diagnostics:** `frontend/scripts/probe-schema.mjs` checks every table, RPC and the storage bucket using the anon key only. `frontend/scripts/probe-grants.mjs` discriminates a grant failure (`42501`) from RLS row-filtering and prints the raw SQLSTATE, message and hint. `frontend/scripts/diagnose-upload.mjs` replays all five upload steps as a real user. `frontend/scripts/probe-ai.mts` (`npm run probe:ai`) calls Claude for real against a synthetic institutional circular and asserts the structured contract field by field, reporting the key prefix and endpoint in use without printing the key.
 
 **Build hygiene:** `next build` and `next dev` write incompatible artifacts into the same `.next`. Run `npm run clean` when switching modes, or the dev server throws `__webpack_modules__[moduleId] is not a function`.
 
@@ -412,4 +419,4 @@ update profiles set role = 'hod'     where id = '<uuid>';
 
 A three-account demo (one student, one faculty, one HOD) exercises every path, including escalation.
 
-**Tests:** none written yet. The security boundaries that most need coverage are RLS visibility, invalid workflow transitions, self-approval refusal, **faculty attempting to decide at `hod_review`**, **students attempting to escalate**, audit immutability and version-number uniqueness.
+**Tests:** `npm run test:processing` runs 43 tests covering extraction, the OCR fallback decision, OCR, rasterisation, chunking, and the AI layer's response schema and `coerce()` coercion — no database and no network. Still uncovered: the security boundaries, which are RLS visibility, invalid workflow transitions, self-approval refusal, **faculty attempting to decide at `hod_review`**, **students attempting to escalate**, audit immutability and version-number uniqueness.

@@ -26,7 +26,7 @@ Architecture and MVP scope finalized.
 8. chunking + FTS
 9. search
 10. workflow/audit/versioning
-11. Gemini summary/metadata
+11. Claude summary/metadata
 12. grounded Q&A
 13. frontend polish
 14. deployment

@@ -31,11 +31,13 @@ Use PyMuPDF first; trigger Tesseract only when extracted text is insufficient.
 **Amendment:** OCR is **no longer a differentiator or a critical-path feature**. It is retained as a minimal web-app capability solely because FS-05 explicitly requires *"extract searchable text from scanned documents using OCR"*, and dropping it entirely risks losing marks against a stated organizer requirement. It is scheduled last (Phase 6) and must never consume time budgeted for search quality.
 
 ## ADR-005 Gemini for intelligence
-**Status:** Accepted, amended
+**Status:** **Superseded by ADR-034**
 
 Use Gemini for AI capabilities.
 
-**Amendment:** **AI is not the product; it is an enhancement layer.** Scope narrows to metadata extraction, categorization, similarity assistance, search enhancement and summaries. Grounded Q&A is removed from the MVP (see ADR-016). All Gemini calls are server-side proxies — see ADR-013.
+**Amendment (revised direction):** **AI is not the product; it is an enhancement layer.** Scope narrows to metadata extraction, categorization, similarity assistance, search enhancement and summaries. Grounded Q&A is removed from the MVP (see ADR-016). All AI calls are server-side proxies — see ADR-013.
+
+**Why superseded:** the provider changed to Anthropic Claude. The enhancement-layer positioning above is unchanged and still binding; only the vendor moved. See ADR-034.
 
 ## ADR-006 Data-configured workflows
 **Status:** **Superseded by ADR-012**
@@ -284,9 +286,9 @@ This was caught by a test, not by review. The direct `page.render` approach work
 ## ADR-031 Provenance is a parameter, never an assumption
 **Status:** Accepted
 
-`apply_ai_metadata` takes an explicit `p_source metadata_source` argument (`'ai'` or `'system'`), validated in the function body. The Gemini branch passes `'ai'`; the deterministic keyword classifier passes `'system'`.
+`apply_ai_metadata` takes an explicit `p_source metadata_source` argument (`'ai'` or `'system'`), validated in the function body. The AI branch passes `'ai'`; the deterministic keyword classifier passes `'system'`.
 
-**Why:** the first implementation hardcoded `category_source = 'ai'` and `audit_logs.metadata->>'source' = 'ai'`. Two different engines call that function, so with no `GEMINI_API_KEY` the keyword classifier's decision was stored as `'ai'`, rendered with an **AI** badge, and audited as model output — attributing a filing to a model that was never invoked. The source comment even claimed the opposite.
+**Why:** the first implementation hardcoded `category_source = 'ai'` and `audit_logs.metadata->>'source' = 'ai'`. Two different engines call that function, so with no AI key configured the keyword classifier's decision was stored as `'ai'`, rendered with an **AI** badge, and audited as model output — attributing a filing to a model that was never invoked. The source comment even claimed the opposite.
 
 **Rule this generalises to:** when two callers with different trust or provenance semantics share a function, the distinguishing fact must be a parameter. A default that happens to be right for one caller is a latent lie for the other.
 
@@ -309,6 +311,64 @@ The pipeline read the file once and passed that array to both `extractPdfText()`
 **Rule:** retain one pristine `Buffer` and hand pdf.js a fresh copy per call (`fileBytes` / `freshBytes()` in `pipeline.ts`).
 
 **Why the test suite missed it:** every test constructed a fresh `new Uint8Array(...)` per call, so no test reproduced the pipeline's actual buffer reuse. There is now an explicit regression test that keeps one retained buffer across extraction and multiple renders, plus one that asserts the detachment happens at all — so if pdf.js ever stops detaching, we find out deliberately rather than by accident.
+
+## ADR-034 Anthropic Claude replaces Gemini as the AI provider
+**Status:** Accepted — supersedes ADR-005
+
+The document-intelligence layer calls **Anthropic Claude** via `@anthropic-ai/sdk`, model `claude-opus-5` by default and overridable with `ANTHROPIC_MODEL`. `GEMINI_API_KEY` and `@google/genai` are removed.
+
+**What did not change**, deliberately: the structured contract (`summary`, `key_points`, `entities`, `important_dates`, classification), the `AiOutcome` failure protocol, `coerce()`, the processing state machine `uploaded → extracting → analyzing → indexing → ready`, version-scoped insights (ADR-032), provenance-as-a-parameter (ADR-031), and the deterministic keyword classifier as the fallback. The swap touched one module plus one import line, which is the payoff for having kept the provider behind `analyseDocument()`.
+
+**What did change at the API level:**
+
+| Concern | Gemini | Claude |
+| --- | --- | --- |
+| Schema | `config.responseSchema` + `responseMimeType` | `output_config.format` (`type: 'json_schema'`) — GA, no beta header |
+| Nullability | `nullable: true` | not in the supported subset → `anyOf` with `{type:'null'}`, or an `enum` containing `null` |
+| Objects | — | **must** carry `additionalProperties: false` |
+| Reading output | `response.text` | narrow `response.content[]` to the `text` block |
+| `temperature: 0.1` | set | **removed** — sampling parameters are rejected with a 400 on Opus 5 |
+| Reasoning | n/a | `thinking: {type:'adaptive'}`, `effort: 'medium'`, `max_tokens: 16_000` |
+
+**`max_tokens` is 16,000 for a response that is a few hundred tokens** because adaptive thinking spends output tokens before the JSON is emitted. Too low and the JSON is truncated mid-object.
+
+**Accepted cost:** Claude is metered rather than free-tier, so processing a document now has a marginal cost (roughly 6k input tokens for a 24k-character document). `ANTHROPIC_MODEL` exists so the tier is a config change, not a code change.
+
+**Server-side fallbacks were declined.** Adding the `server-side-fallback` beta would re-run a refused request on another model. The pipeline already has a designed degradation path — the deterministic keyword classifier — so a refusal maps to `REFUSED` and falls through to it rather than pulling a beta dependency into the critical path.
+
+## ADR-035 Every schema key is required; `null` is the explicit unknown
+**Status:** Accepted
+
+The response schema marks **all ten fields `required`** and expresses "unknown" as `null`, instead of making fields optional.
+
+**Why:** an optional field the model omits is indistinguishable from a field the model considered and had nothing to say about. Both render as an absent summary. Forcing an explicit `null` makes "the model looked and found nothing" a stated fact rather than an inference from silence — which is the same principle as the `ok: false` + reason protocol, applied one level down.
+
+`coerce()` handles both shapes anyway, so this costs nothing and removes an ambiguity.
+
+## ADR-036 The taxonomy is enforced in the schema, not only resolved afterwards
+**Status:** Accepted — strengthens ADR-031's sibling guarantee
+
+`department_slug` and `category_slug` are constrained to an `enum` of the **actual seeded slugs plus `null`**, so a slug outside the taxonomy cannot be emitted at all. `pipeline.ts` still resolves the returned slug against the database.
+
+**Why keep both:** the enum makes the invalid output unrepresentable, which is stronger than discarding it. But it depends on a schema built at request time from a database read — if the taxonomy is empty the enum degrades to a free string, and a future refactor could drop it. The database resolution is the layer that cannot be bypassed, so it stays. Same reasoning as grants-and-RLS in ADR-027: two mechanisms answering the same question in different ways is not duplication when one of them can fail open.
+
+**Guard this needed:** an empty `enum` is not a valid JSON Schema, so an unseeded taxonomy falls back to a nullable string rather than emitting a schema the API would reject. There is a test for exactly that.
+
+## ADR-037 Provider modules are named for what they do, not who supplies it
+**Status:** Accepted
+
+`processing/gemini.ts` became `processing/analyze.ts`.
+
+**Why:** its siblings are `extract.ts`, `ocr.ts`, `chunk.ts`, `pipeline.ts` — named by function. `gemini.ts` was the only file named after a vendor, and that is the only reason a provider swap touched `pipeline.ts` at all. The function boundary (`analyseDocument()` returning `AiOutcome`) was already provider-neutral; the filename was the leak.
+
+## ADR-038 `ANTHROPIC_BASE_URL` is respected, but never silent
+**Status:** Accepted
+
+The Anthropic SDK honours `ANTHROPIC_BASE_URL` with no announcement. `analyze.ts` logs a warning once per process when it is set, naming the host.
+
+**Why this is an ADR and not a log line:** on a document-management platform, that variable decides **where institutional document text is sent**. A developer can set it for a gateway, an unrelated tool can set it globally, and nothing in the code review would show it — the request just goes somewhere else. This was not hypothetical: it was found set to a third-party router during this migration, which is why the AI call returned `401` from a host nobody had chosen in code.
+
+The override is not blocked, because proxying to a gateway is a legitimate deployment choice. It is only made visible. `npm run probe:ai` prints the endpoint and the key prefix — never the key — for the same reason.
 
 ## ADR-020 Personal catalogs are invisible to administrators
 **Status:** **Obsolete** — the desktop application was cancelled (see ADR-008/ADR-011 supersession by the one-web-app direction). Retained for the reasoning trail.

@@ -12,10 +12,11 @@
     "test:processing": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-processing.mts",
     "probe:schema": "node scripts/probe-schema.mjs",
     "probe:grants": "node scripts/probe-grants.mjs",
+    "probe:ai": "node --env-file-if-exists=.env.local --experimental-strip-types --import ./scripts/register-hook.mjs scripts/probe-ai.mts",
     "diagnose:upload": "node scripts/diagnose-upload.mjs"
   },
   "dependencies": {
-    "@google/genai": "^2.18.0",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@napi-rs/canvas": "^1.0.7",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.58.0",
