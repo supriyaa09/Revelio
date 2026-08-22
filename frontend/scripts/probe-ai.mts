@@ -9,7 +9,11 @@
  *
  *   npm run probe:ai
  */
-import { analyseDocument, DEFAULT_ANTHROPIC_MODEL } from '../src/lib/processing/analyze.ts';
+import {
+  analyseDocument,
+  DEFAULT_ANTHROPIC_MODEL,
+  resolveBaseUrl,
+} from '../src/lib/processing/analyze.ts';
 
 const DEPARTMENTS = [
   { slug: 'academic', name: 'Academic' },
@@ -64,14 +68,19 @@ This circular is issued with the approval of the Principal, Dr. Anitha Rao.
 `.trim();
 
 const key = process.env.ANTHROPIC_API_KEY;
-const base = process.env.ANTHROPIC_BASE_URL;
+const rawBase = process.env.ANTHROPIC_BASE_URL;
 console.log(`\nANTHROPIC_API_KEY  ${key ? `present (${key.length} chars, prefix ${key.slice(0, 7)}…)` : 'ABSENT'}`);
 if (key && !key.startsWith('sk-ant-')) {
   console.log('                   WARNING: an Anthropic API key starts with "sk-ant-".');
 }
-console.log(`endpoint           ${base ?? 'https://api.anthropic.com (default)'}`);
-if (base) {
-  console.log('                   WARNING: ANTHROPIC_BASE_URL routes document text to a third party.');
+
+// Report the endpoint that will ACTUALLY be used, not the raw variable. An
+// inherited ANTHROPIC_BASE_URL is ignored unless explicitly permitted, so
+// printing the variable alone would misreport where the document text goes.
+const resolvedBase = resolveBaseUrl(process.env, (m) => console.log(`                   ${m}`));
+console.log(`endpoint           ${resolvedBase}${resolvedBase === rawBase ? '  (override in use)' : '  (Anthropic direct)'}`);
+if (rawBase && resolvedBase !== rawBase) {
+  console.log(`                   ANTHROPIC_BASE_URL=${rawBase} was set and IGNORED.`);
 }
 console.log(`model              ${process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL}`);
 console.log(`document           ${DOCUMENT.length} chars\n`);

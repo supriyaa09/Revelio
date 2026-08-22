@@ -35,6 +35,9 @@ export interface AiOutcome {
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
 
+/** Where Anthropic's own API lives. Used unless a proxy is explicitly opted into. */
+export const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
+
 /** Characters of document text sent to the model. */
 const MAX_PROMPT_CHARS = 24_000;
 
@@ -84,12 +87,10 @@ export async function analyseDocument(input: {
 
   const model = process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
 
-  // The Anthropic SDK silently honours ANTHROPIC_BASE_URL. On a document
-  // platform that means institutional document text could be routed to a third
-  // party without anyone choosing it in code, so say so once per process. The
-  // override is respected — it is deliberate for gateways and proxies — but it
-  // is never invisible.
-  warnOnNonDefaultBaseUrl();
+  // Resolve the endpoint explicitly. See resolveBaseUrl(): an inherited
+  // ANTHROPIC_BASE_URL is NOT honoured unless it was opted into, because the
+  // payload here is institutional document text.
+  const baseURL = resolveBaseUrl();
 
   const taxonomy = input.categories
     .map((c) => `- ${c.department_slug}/${c.slug} — ${c.name}${c.description ? `: ${c.description}` : ''}`)
@@ -128,7 +129,9 @@ export async function analyseDocument(input: {
 
   try {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey });
+    // baseURL is passed explicitly so the SDK cannot fall back to reading
+    // ANTHROPIC_BASE_URL out of the ambient environment.
+    const client = new Anthropic({ apiKey, baseURL });
 
     const response = await client.messages.create({
       model,
@@ -289,14 +292,59 @@ function describeError(error: unknown): string {
 
 let baseUrlWarned = false;
 
-function warnOnNonDefaultBaseUrl(): void {
-  const base = process.env.ANTHROPIC_BASE_URL;
-  if (!base || baseUrlWarned) return;
-  baseUrlWarned = true;
-  console.warn(
-    `[analyze] ANTHROPIC_BASE_URL is set to ${base}. Document text will be sent ` +
-      'there instead of to api.anthropic.com. Unset it to call Anthropic directly.',
-  );
+/**
+ * Decides which endpoint the document text is sent to.
+ *
+ * The Anthropic SDK reads `ANTHROPIC_BASE_URL` from the environment on its own.
+ * That is a reasonable default for a CLI; it is the wrong default here. This
+ * process inherits the whole shell environment, so a base URL exported for some
+ * unrelated tool silently redirects every institutional document — full text of
+ * circulars, budgets, student records — to a third party that no one chose in
+ * code, in configuration, or in review. In this project that variable really was
+ * set to a third-party router in the developer's shell, which is what motivated
+ * this function.
+ *
+ * So the override is opt-in rather than opt-out. It still exists — corporate
+ * gateways and self-hosted proxies are legitimate — but it has to be stated
+ * twice, and a redirect that was not asked for is refused and reported rather
+ * than obeyed silently. Being ignored loudly is the safe failure here; being
+ * obeyed silently is not.
+ */
+export function resolveBaseUrl(
+  env: Record<string, string | undefined> = process.env,
+  warn: (message: string) => void = (m) => console.warn(m),
+): string {
+  const override = env.ANTHROPIC_BASE_URL?.trim();
+  if (!override) return ANTHROPIC_DEFAULT_BASE_URL;
+
+  const allowed = env.ANTHROPIC_ALLOW_BASE_URL_OVERRIDE?.trim().toLowerCase() === 'true';
+
+  if (!allowed) {
+    if (!baseUrlWarned) {
+      baseUrlWarned = true;
+      warn(
+        `[analyze] IGNORING ANTHROPIC_BASE_URL=${override}. Document text is being sent to ` +
+          `${ANTHROPIC_DEFAULT_BASE_URL} instead. That variable is set in this process's ` +
+          'environment, and honouring it would forward institutional document text to a third ' +
+          'party. If the proxy is intended, set ANTHROPIC_ALLOW_BASE_URL_OVERRIDE=true.',
+      );
+    }
+    return ANTHROPIC_DEFAULT_BASE_URL;
+  }
+
+  if (!baseUrlWarned) {
+    baseUrlWarned = true;
+    warn(
+      `[analyze] ANTHROPIC_BASE_URL=${override} is in use and was explicitly permitted by ` +
+        'ANTHROPIC_ALLOW_BASE_URL_OVERRIDE. Document text is sent there, not to Anthropic.',
+    );
+  }
+  return override;
+}
+
+/** Test seam: the warn-once latch is process-wide by design. */
+export function __resetBaseUrlWarning(): void {
+  baseUrlWarned = false;
 }
 
 /**

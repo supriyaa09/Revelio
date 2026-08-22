@@ -7,18 +7,80 @@
 - Last updated: 2026-08-23
 - Project name: **Revelio**
 - Current phase: **Phase 3 implemented** (extraction, OCR, AI, chunks). Phase 4 (search) is next.
-- Overall status: Typechecks, builds (11 routes), 43/43 processing tests pass; `0001`–`0007` applied
+- Overall status: Typechecks, builds (11 routes), 49/49 processing tests pass; `0001`–`0007` applied, **`0008` pending**
 - Selected problem: FS-05 Document Management
 - Product shape: **ONE web application** (intelligent workspace + institutional governance)
 - Roles: **`student`, `faculty`, `hod`** — three only, no admin
 - Workflow: `draft → submitted → faculty_review | hod_review → approved / rejected / changes_requested`
 - AI provider: **Anthropic Claude** (`claude-opus-5`), server-side only
 - Deployment status: Not deployed
-- Blocker: **the `ANTHROPIC_API_KEY` in `.env.local` is rejected `401` by both `api.anthropic.com` and the `ANTHROPIC_BASE_URL` gateway currently set in the shell.** Supply a valid `sk-ant-…` key and unset `ANTHROPIC_BASE_URL`, then run `npm run probe:ai`.
+- Blockers, both configuration rather than code:
+  1. **`0008_processing_access.sql` is not applied.** Until it is, only a document's owner can process it — faculty reviewers still see no Process button. Confirm with `npm run probe:processing`.
+  2. **No `ANTHROPIC_API_KEY` is set** in `frontend/.env.local`, so no AI analysis is produced. A real key starts `sk-ant-`. Note that `ANTHROPIC_BASE_URL` is set to a third-party router in the shell; it is now **ignored** unless `ANTHROPIC_ALLOW_BASE_URL_OVERRIDE=true` (ADR-041). Verify with `npm run probe:ai`.
 
 ---
 
 ## Change Log
+
+### 2026-08-23 — Make the pipeline reachable: auto-start, reviewer access, endpoint pinning
+
+#### The reported symptom
+
+A document showed **"Uploaded · Not processed yet"** with no way to process it. The Processing panel rendered no button at all.
+
+#### Three independent causes, not one
+
+**1. The button was correctly hidden.** `canProcess` was `isOwner || role === 'hod'`, which mirrored `can_process_version()` in the database exactly. The viewer was **faculty and not the owner**, so both the UI and the database agreed she could not process it. Nothing was broken here — the *rule* was wrong. See ADR-039.
+
+**2. Nothing ever started the pipeline.** `uploadDocument()` returned after writing its audit event; no code path invoked `processVersion` for a new upload. Every document ever uploaded was waiting for a human to press a button that most viewers could not see. See ADR-040.
+
+**3. No `ANTHROPIC_API_KEY` was configured**, so even a successful run would have produced extraction, chunks and keyword filing but no summary, entities or dates — reported honestly by the UI as "no AI analysis is stored", which reads like a bug when the cause is a missing variable.
+
+#### Change
+
+**Added**
+
+- `supabase/migrations/0008_processing_access.sql` — `can_process_version()` becomes `document_is_visible(v.document_id)`, the same predicate behind every read policy. `apply_ai_metadata()`'s inline owner-or-HOD check is widened identically, because leaving it would have raised `FORBIDDEN` *after* extraction and AI analysis had already been persisted — a partial pipeline, worse than a clean refusal. Also revokes `EXECUTE` on `can_process_version` from `public`/`anon`, which `0007` omitted.
+- **Auto-start** in `processing-status.tsx`: opening a `pending` version runs the pipeline, non-blocking, with the existing stage polling showing real progress. A `failed` version is deliberately **not** retried automatically.
+- `frontend/scripts/probe-processing.mjs` + `npm run probe:processing` — verifies the Phase-3 database objects exist and reports whether `0008` is applied, using anon-key signals only.
+- `resolveBaseUrl()` in `analyze.ts`, plus `ANTHROPIC_ALLOW_BASE_URL_OVERRIDE`.
+- **6 new tests** covering endpoint resolution. **43 → 49.**
+
+**Modified**
+
+- `documents/[id]/page.tsx` — `canProcess` now mirrors `document_is_visible()`: `isOwner || (canReview(role) && status !== 'draft')`.
+- `analyze.ts` — `baseURL` is passed to the SDK explicitly, so it cannot read `ANTHROPIC_BASE_URL` from the ambient environment. An unapproved override is ignored and named in the log.
+- `probe-ai.mts` — reports the endpoint that will *actually* be used, and says when an override was set and refused. It previously printed the variable, which misreported the destination.
+- `.env.example` — documents the `sk-ant-` prefix and the two-variable proxy opt-in.
+
+**Not changed, deliberately:** the workflow state machine, transitions, roles, RLS policies, storage policies, grants, the structured AI contract, `coerce()`, the `AiOutcome` failure protocol, version-scoped insights (ADR-032), provenance-as-a-parameter (ADR-031), and the keyword-classifier fallback. No service-role key was introduced. Nothing was granted to `anon` — one grant was removed.
+
+#### Why `document_is_visible()` rather than a new rule
+
+The old check was wrong in both directions simultaneously: too narrow for faculty (a reviewer could read a submission but not analyse it) and too broad for the HOD (who could process a draft they are not permitted to read). Processing derives nothing a reader could not obtain by reading the file, so "may process" and "may read" are one question — and it was being answered inconsistently in two places. Full reasoning in ADR-039.
+
+#### Verification status
+
+| Item | Status |
+| --- | --- |
+| `npm run typecheck` | **Passes**, zero errors |
+| `npm run build` | **Passes**, 11 routes |
+| `npm run test:processing` | **49 passed, 0 failed** (was 43) |
+| `0007` objects exist in the live database | **Verified** — `npm run probe:processing` |
+| `can_process_version` was anon-executable before `0008` | **Verified** — the probe executed it as anon |
+| `0008_processing_access.sql` applied | **NO — not executed.** The probe reports `NOT APPLIED` |
+| A successful live Claude analysis | **NOT VERIFIED — no `ANTHROPIC_API_KEY` is set** |
+| End-to-end upload → auto-process → insights | **NOT VERIFIED** |
+
+**What is proven and what is not.** The pipeline modules, the schema contract and the endpoint logic are covered by 49 executed tests, and the Phase-3 RPCs are confirmed present in the live project. The two things that would make the feature visibly work — applying `0008` and supplying a valid key — are both outstanding and neither is a code change. Until `0008` is applied, only the document **owner** can process; auto-start already works for them, which is enough to exercise the full path end to end.
+
+#### Status
+
+- [x] Planned
+- [x] Implemented
+- [~] Tested — 49/49 unit; `0008` unapplied and no live AI round trip
+- [ ] Deployed
+
 
 ### 2026-08-23 — Switch AI provider from Gemini to Anthropic Claude
 

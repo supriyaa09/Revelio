@@ -22,7 +22,14 @@ import {
 } from '../src/lib/processing/extract.ts';
 import { ocrImage } from '../src/lib/processing/ocr.ts';
 import { chunkPages, CHUNK_CHARS, MAX_CHUNKS } from '../src/lib/processing/chunk.ts';
-import { analyseDocument, buildAnalysisSchema, coerce } from '../src/lib/processing/analyze.ts';
+import {
+  analyseDocument,
+  ANTHROPIC_DEFAULT_BASE_URL,
+  buildAnalysisSchema,
+  coerce,
+  resolveBaseUrl,
+  __resetBaseUrlWarning,
+} from '../src/lib/processing/analyze.ts';
 
 // ── PDF construction with a real xref table ─────────────────────────────────
 function buildPdf(objects: Buffer[]): Buffer {
@@ -705,6 +712,78 @@ await test('analyseDocument reports NO_TEXT before spending an API call', async 
 
 if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = savedKey;
+
+// ── 9. Endpoint resolution ──────────────────────────────────────────────────
+// These matter because the failure they guard against is silent: an inherited
+// ANTHROPIC_BASE_URL would forward institutional document text to a third party
+// with nothing in the code saying so. resolveBaseUrl takes its environment as a
+// parameter precisely so this is testable without mutating process.env.
+console.log('\n=== 9. Endpoint resolution (where document text is sent) ===');
+
+await test('no override resolves to Anthropic directly', () => {
+  __resetBaseUrlWarning();
+  assert.equal(resolveBaseUrl({}, () => {}), ANTHROPIC_DEFAULT_BASE_URL);
+});
+
+await test('an inherited base URL is IGNORED, not silently obeyed', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const resolved = resolveBaseUrl(
+    { ANTHROPIC_BASE_URL: 'https://agentrouter.org' },
+    (m) => warnings.push(m),
+  );
+  assert.equal(
+    resolved,
+    ANTHROPIC_DEFAULT_BASE_URL,
+    'an unapproved third-party endpoint was accepted — document text would leak there',
+  );
+  assert.equal(warnings.length, 1, 'ignoring an override must be reported, never silent');
+  assert.match(warnings[0]!, /IGNORING/);
+  assert.match(warnings[0]!, /agentrouter\.org/, 'the warning must name the endpoint it refused');
+});
+
+await test('an explicitly permitted base URL is honoured', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const resolved = resolveBaseUrl(
+    {
+      ANTHROPIC_BASE_URL: 'https://gateway.internal.example',
+      ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: 'true',
+    },
+    (m) => warnings.push(m),
+  );
+  assert.equal(resolved, 'https://gateway.internal.example', 'a deliberate proxy must still work');
+  assert.equal(warnings.length, 1, 'using a proxy is worth one line in the log');
+});
+
+await test('the opt-in must be exactly true, not merely present', () => {
+  // 'false', '1', 'yes' and an empty value are all rejected. A half-set flag
+  // resolving to "allowed" is the failure mode worth guarding.
+  for (const value of ['false', '1', 'yes', '', 'TRUE ']) {
+    __resetBaseUrlWarning();
+    const resolved = resolveBaseUrl(
+      { ANTHROPIC_BASE_URL: 'https://proxy.example', ANTHROPIC_ALLOW_BASE_URL_OVERRIDE: value },
+      () => {},
+    );
+    const expected = value.trim().toLowerCase() === 'true' ? 'https://proxy.example' : ANTHROPIC_DEFAULT_BASE_URL;
+    assert.equal(resolved, expected, `ANTHROPIC_ALLOW_BASE_URL_OVERRIDE=${JSON.stringify(value)}`);
+  }
+});
+
+await test('a blank base URL is treated as unset', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  assert.equal(resolveBaseUrl({ ANTHROPIC_BASE_URL: '   ' }, (m) => warnings.push(m)), ANTHROPIC_DEFAULT_BASE_URL);
+  assert.equal(warnings.length, 0, 'an empty value is not a redirect and should not warn');
+});
+
+await test('the warning is emitted once per process, not once per document', () => {
+  __resetBaseUrlWarning();
+  const warnings: string[] = [];
+  const env = { ANTHROPIC_BASE_URL: 'https://agentrouter.org' };
+  for (let i = 0; i < 5; i++) resolveBaseUrl(env, (m) => warnings.push(m));
+  assert.equal(warnings.length, 1, 'a per-document warning would flood the log during a batch');
+});
 
 console.log(`\n${'='.repeat(56)}`);
 console.log(`  ${pass} passed, ${fail} failed`);

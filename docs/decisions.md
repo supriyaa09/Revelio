@@ -362,13 +362,59 @@ The response schema marks **all ten fields `required`** and expresses "unknown" 
 **Why:** its siblings are `extract.ts`, `ocr.ts`, `chunk.ts`, `pipeline.ts` — named by function. `gemini.ts` was the only file named after a vendor, and that is the only reason a provider swap touched `pipeline.ts` at all. The function boundary (`analyseDocument()` returning `AiOutcome`) was already provider-neutral; the filename was the leak.
 
 ## ADR-038 `ANTHROPIC_BASE_URL` is respected, but never silent
-**Status:** Accepted
+**Status:** **Superseded by ADR-041** — warning proved insufficient, because the variable lived in the developer's shell where no amount of logging removes it. The reasoning below still stands and is why ADR-041 exists.
 
 The Anthropic SDK honours `ANTHROPIC_BASE_URL` with no announcement. `analyze.ts` logs a warning once per process when it is set, naming the host.
 
 **Why this is an ADR and not a log line:** on a document-management platform, that variable decides **where institutional document text is sent**. A developer can set it for a gateway, an unrelated tool can set it globally, and nothing in the code review would show it — the request just goes somewhere else. This was not hypothetical: it was found set to a third-party router during this migration, which is why the AI call returned `401` from a host nobody had chosen in code.
 
 The override is not blocked, because proxying to a gateway is a legitimate deployment choice. It is only made visible. `npm run probe:ai` prints the endpoint and the key prefix — never the key — for the same reason.
+
+## ADR-039 Processing authority is the same predicate as read visibility
+**Status:** Accepted — implemented in `0008_processing_access.sql`
+
+`can_process_version()` was `owner_id = auth.uid() or is_hod()`. It is now `document_is_visible(v.document_id)` — the single predicate already behind `documents_select`, `versions_select`, `insights_select`, `chunks_select` and the `documents_read` storage policy. `apply_ai_metadata()`'s inline check was widened identically.
+
+**Why:** the old rule was wrong in *both* directions at once.
+
+- **Too narrow.** Faculty are the reviewer tier. A faculty member could open a student's submitted document but not process it, so the reviewer had no summary, no entities and no extracted text — exactly the information review depends on. Since the UI gate faithfully mirrored the database, the Process button simply did not render and the document looked permanently stuck at "Uploaded". That is the bug that prompted this ADR.
+- **Too broad.** `or is_hod()` let an HOD process a **draft** they are not permitted to read, because the reviewer tier is restricted to non-draft documents. Authorization that exceeds visibility is a quieter bug than one that falls short of it, but it is the same kind of bug.
+
+**Why one predicate rather than a new one:** "who may run derived analysis over this text" and "who may read this text" are the same question. Processing produces nothing the caller could not already obtain by reading the file and thinking about it. Two predicates answering one question drift apart — this ADR exists because they already had.
+
+This is not the two-mechanism argument of ADR-027/ADR-036. There, two layers answer the same question by *different* means so one can catch the other failing open. Here there was one question answered inconsistently in two places, which is duplication, not defence.
+
+**Accepted cost:** any reviewer can spend OCR and AI budget on any non-draft document. Acceptable — the reviewer tier is faculty and HOD, not students, and re-processing is idempotent per version. Rejected alternative: a per-document processing grant. It cannot be demonstrated in a hackathon and adds a table to express a rule the visibility predicate already expresses.
+
+**Preserved:** a student still sees only their own documents, so "anyone who can read it can process it" never means "any signed-in user". Drafts remain private to their owner (ADR-020's surviving principle).
+
+## ADR-040 Processing starts by itself; failures never retry by themselves
+**Status:** Accepted
+
+Opening a version whose `processing_status` is `pending` starts the pipeline automatically, client-driven, non-blocking. A version that is `failed` is **not** retried automatically.
+
+**Why automatic at all:** nothing invoked the pipeline. `uploadDocument()` returned after writing the audit event, so every uploaded document sat at "Uploaded / Not processed yet" until someone who knew a Process button existed pressed it. The product claim is "upload a document and it is understood"; requiring a manual second step to reach any intelligence made the whole feature look broken, and for a viewer without processing rights it *was* unreachable.
+
+**Why client-driven rather than server-side after upload:** the pipeline runs 10–60 s and longer with OCR. Doing it inside the upload action makes the user watch a spinner and risks the platform request cap. Firing it post-response from the server action gives no progress feedback and depends on the runtime not freezing the invocation. The client already polls `document_versions` for real stages, so triggering from the page reuses that and shows genuine progress — Extracting → Analyzing → Indexing → Ready. Upload navigates straight to the document page, so this covers the upload flow exactly.
+
+**Why `pending` only, and this is the important half:** auto-retrying a `failed` version would re-run on every page view. A file that fails deterministically — a corrupt PDF, a password-protected one, an expired credential — would then burn OCR and AI budget on every visit, forever, with no bound and no one noticing. Retry stays a human decision. Auto-start is scoped to work that has never been attempted.
+
+**Guard required:** the "already started" set is keyed by version id at module scope, not a component ref. React StrictMode runs effects mount → cleanup → mount in development, and the `router.refresh()` that ends a run re-renders the component; a per-instance guard survives the refresh but not a remount, and would POST twice. The guard is about the work, so it is keyed to the work.
+
+**Accepted cost:** a reviewer opening an old unprocessed document triggers processing they did not ask for. This is also the only mechanism that clears the existing backlog of unprocessed uploads, which is why it is accepted rather than mitigated.
+
+## ADR-041 An inherited `ANTHROPIC_BASE_URL` is ignored, not obeyed
+**Status:** Accepted — supersedes ADR-038
+
+`analyze.ts` passes `baseURL` to the SDK explicitly. `ANTHROPIC_BASE_URL` alone is **ignored and logged**. Honouring it requires `ANTHROPIC_ALLOW_BASE_URL_OVERRIDE=true` as well.
+
+**Why warning was not enough.** ADR-038 chose to warn and respect. The variable was set to a third-party router in the developer's shell, and a shell variable cannot be fixed by editing `.env.local` — in Next.js a real environment variable takes precedence over `.env` files. So the documented remedy ("unset it") required knowing which shell would launch `next dev`, and the warning it produced was one line inside a log nobody reads during a demo. The default was therefore: full text of institutional documents — circulars, budgets, student records — forwarded to a host chosen by an unrelated tool, with nothing in the code, the configuration or the review saying so.
+
+**Why opt-in is the right shape.** Proxying to a corporate gateway is legitimate, so the capability stays. But a redirect nobody asked for should fail loudly rather than succeed quietly. Two variables mean the intent has to be stated twice, and a stale one inherited from elsewhere cannot satisfy both.
+
+**Why the flag must be exactly `true`:** `'1'`, `'yes'` and `'false'` are all rejected, because a half-configured flag that resolves to "allowed" is the failure this is meant to prevent. There is a test for each.
+
+**Verification:** `npm run probe:ai` prints the endpoint that will *actually* be used and says so explicitly when an override was set and refused. Printing the variable would have misreported the destination.
 
 ## ADR-020 Personal catalogs are invisible to administrators
 **Status:** **Obsolete** — the desktop application was cancelled (see ADR-008/ADR-011 supersession by the one-web-app direction). Retained for the reasoning trail.

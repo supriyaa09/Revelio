@@ -26,6 +26,18 @@ interface Props {
 }
 
 /**
+ * Versions this browser tab has already auto-started, so a run is never fired
+ * twice for the same version.
+ *
+ * Module scope rather than a ref on purpose. React StrictMode invokes effects
+ * mount → cleanup → mount in development, and the `router.refresh()` at the end
+ * of a run re-renders this component with new props; a per-instance guard would
+ * survive the first but a remount would clear it and POST again. Keying by
+ * version id is the honest scope: the guard is about the work, not the widget.
+ */
+const autoStarted = new Set<string>();
+
+/**
  * Shows the real pipeline state, read from document_versions. Nothing here is
  * simulated: the stage comes from the database, and a failure shows the actual
  * recorded error rather than a placeholder.
@@ -43,6 +55,7 @@ export function ProcessingStatus({
   const [stage, setStage] = useState<Stage>(initialStage ?? (initialStatus === 'completed' ? 'ready' : 'uploaded'));
   const [error, setError] = useState<string | null>(initialError);
   const [running, setRunning] = useState(false);
+  const [auto, setAuto] = useState(false);
   const [, startTransition] = useTransition();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -84,7 +97,7 @@ export function ProcessingStatus({
     return stopPolling;
   }, [status, versionId, router, stopPolling]);
 
-  async function run() {
+  const run = useCallback(async () => {
     setRunning(true);
     setError(null);
     setStatus('processing');
@@ -107,7 +120,24 @@ export function ProcessingStatus({
       setRunning(false);
       startTransition(() => router.refresh());
     }
-  }
+  }, [documentId, router]);
+
+  // Start processing by itself the first time an unprocessed version is opened.
+  //
+  // Upload navigates straight here, so this is what makes "upload a file and
+  // watch it be understood" happen without the user having to know a Process
+  // button exists. It is deliberately scoped to `pending`: a version that
+  // already failed is NOT retried automatically, because a failure that repeats
+  // on every page view is an infinite loop that burns OCR and AI budget. Retry
+  // stays a human decision.
+  useEffect(() => {
+    if (!canProcess) return;
+    if (status !== 'pending') return;
+    if (autoStarted.has(versionId)) return;
+    autoStarted.add(versionId);
+    setAuto(true);
+    void run();
+  }, [canProcess, status, versionId, run]);
 
   const activeIndex = stage === 'failed' ? -1 : STEPS.findIndex((s) => s.stage === stage);
   const busy = running || status === 'processing';
@@ -177,9 +207,19 @@ export function ProcessingStatus({
         </div>
       )}
 
+      {busy && (
+        <p className="mt-3 text-xs text-slate-500">
+          {auto
+            ? 'Started automatically. Extracting text, then analyzing — this can take up to a minute if the pages need OCR.'
+            : 'Working. Extracting text, then analyzing.'}
+        </p>
+      )}
+
       {status === 'pending' && !busy && (
         <p className="mt-3 text-xs text-slate-500">
-          Not processed yet. {canProcess ? 'Press Process to extract text and analyze.' : ''}
+          {canProcess
+            ? 'Not processed yet. Press Process to extract text and analyze.'
+            : 'Not processed yet. Only the document owner or the reviewer tier can process it.'}
         </p>
       )}
     </section>
