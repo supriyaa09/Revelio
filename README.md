@@ -1,4 +1,4 @@
-# AI-Powered Document Workflow & Knowledge Organization Platform
+# Revelio: Document Workflow & Knowledge Organization Platform
 
 > **Status:** Direction finalized, documentation synchronized. **Implementation not started** — no application code, migrations or database objects exist yet.
 >
