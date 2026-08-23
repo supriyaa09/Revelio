@@ -17,9 +17,10 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { requireSession } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
-import { CountUp, Greeting, KpiCard } from '@/components/metrics';
+import { CountUp, Greeting } from '@/components/metrics';
+import { KpiCard } from '@/components/kpi-card';
 import { ProcessingBadge, StatusBadge } from '@/components/badges';
-import { EmptyState, HeaderFact, formatBytes, formatRelative, stagger } from '@/components/ui';
+import { EmptyState, HeaderFact, formatRelative, stagger } from '@/components/ui';
 import { REVIEW_QUEUE_STATES, canReview } from '@/lib/constants';
 import { fileExtension } from '@/lib/explorer';
 import type { DocumentListItem, ProcessingState } from '@/lib/types';
@@ -173,7 +174,7 @@ export default async function OverviewPage() {
           index={4}
           label="Storage used"
           value={storageBytes}
-          format={formatBytes}
+          format="bytes"
           icon={HardDrive}
           tone="info"
           detail={`Across ${versions.length} version${versions.length === 1 ? '' : 's'}`}
