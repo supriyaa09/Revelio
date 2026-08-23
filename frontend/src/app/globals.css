@@ -1,51 +1,984 @@
 @import 'tailwindcss';
 
-@theme {
-  --color-brand-50: oklch(0.97 0.02 255);
-  --color-brand-100: oklch(0.94 0.04 255);
-  --color-brand-500: oklch(0.58 0.17 262);
-  --color-brand-600: oklch(0.51 0.18 262);
-  --color-brand-700: oklch(0.44 0.16 262);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * REVELIO — Institutional Paper Design System
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * REVEAL. ORGANIZE. INTELLIGENTLY.
+ *
+ * The product is a digital archive, so the interface is made of paper: warm
+ * ivory ground, cream document surfaces, stone hairlines, deep forest ink. Sage
+ * carries success, olive carries supporting structure, and terracotta is spent
+ * sparingly on the moments that need a human decision.
+ *
+ * Every colour is a token. Components never hard-code a hex, which is what lets
+ * the whole product change character — light archive to night archive — without
+ * a single component being touched.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  /* ── Ground & document surfaces ───────────────────────────────────────── */
+  --paper: #f7f4ea; /* Warm Ivory — the desk */
+  --paper-subtle: #f2eee1;
+  --surface: #fbf8f0; /* Soft Cream — the page */
+  --surface-2: #f2eee1;
+  --surface-3: #e6e2d6; /* Stone */
+  --surface-glass: rgba(251, 248, 240, 0.86);
+  --surface-glass-border: #e6e2d6;
+
+  /* ── Ink ──────────────────────────────────────────────────────────────── */
+  --ink: #252823;
+  --ink-2: #3d4239;
+  --muted: #6c7169;
+  --faint: #979d90;
+
+  /* ── Rules & separators ───────────────────────────────────────────────── */
+  --line: #e6e2d6; /* Stone */
+  --line-2: #d5d0c0;
+  --line-glow: rgba(184, 201, 176, 0.55);
+
+  /*
+   * ── Brand ───────────────────────────────────────────────────────────────
+   * Deep Forest is the primary. Sage is its wash and hairline: #B8C9B0 is far
+   * too light to carry text on cream, so it is used for edges and fills only
+   * and the forest carries every glyph.
+   */
+  --accent: #24352d; /* Deep Forest */
+  --accent-hover: #182620;
+  --accent-ink: #24352d;
+  --accent-on: #f7f4ea;
+  --accent-soft: #e9efe4; /* Sage wash */
+  --accent-line: #b8c9b0; /* Sage */
+  --accent-glow: rgba(36, 53, 45, 0.12);
+
+  /* ── Semantic states ──────────────────────────────────────────────────── */
+  /* Approved / verified — sage, darkened to a legible weight. */
+  --ok: #4e6b46;
+  --ok-soft: #e9efe4;
+  --ok-line: #b8c9b0;
+  --ok-glow: rgba(78, 107, 70, 0.14);
+
+  /* Informational — the one cool tone, desaturated so it stays warm-adjacent. */
+  --info: #566d76;
+  --info-soft: #ebf0f1;
+  --info-line: #bccace;
+  --info-glow: rgba(86, 109, 118, 0.14);
+
+  /* Faculty tier — olive. */
+  --tier1: #5e6b54;
+  --tier1-soft: #eef1e9;
+  --tier1-line: #c3cdb7;
+  --tier1-glow: rgba(94, 107, 84, 0.14);
+
+  /* HOD tier — aged brass, so escalation reads apart from "pending". */
+  --tier2: #8a6d3b;
+  --tier2-soft: #f7f1e3;
+  --tier2-line: #ddcaa5;
+  --tier2-glow: rgba(138, 109, 59, 0.14);
+
+  /* Rejected — muted terracotta. Never a fire-engine red. */
+  --danger: #9c4a33;
+  --danger-soft: #f9ebe6;
+  --danger-line: #e0b0a0;
+  --danger-glow: rgba(156, 74, 51, 0.14);
+
+  /* Pending / attention — Terracotta. */
+  --warn: #a85f44;
+  --warn-soft: #faefe9;
+  --warn-line: #e3b7a5;
+  --warn-glow: rgba(168, 95, 68, 0.14);
+
+  --neutral-soft: #f2eee1;
+  --neutral-line: #d5d0c0;
+
+  /* Terracotta at full strength — stamps and seals only. */
+  --seal: #c98268;
+  --seal-ink: #a85f44;
+
+  /*
+   * ── Navigation ──────────────────────────────────────────────────────────
+   * The sidebar is the one dark surface in the light theme, so it needs its own
+   * tokens: `--accent` inverts between themes and cannot double as a background
+   * that must stay dark in both.
+   */
+  --nav: #24352d;
+  --nav-ink: #f1eee3;
+  --nav-muted: rgba(241, 238, 227, 0.62);
+  --nav-line: rgba(241, 238, 227, 0.13);
+  --nav-active: rgba(184, 201, 176, 0.18);
+
+  /*
+   * ── Elevation ───────────────────────────────────────────────────────────
+   * Warm-tinted rather than neutral black: a grey shadow on ivory reads as
+   * dirt, a brown one reads as a page lifting off a desk.
+   */
+  --elev-1: 0 1px 2px 0 rgba(37, 40, 35, 0.04), 0 1px 3px -1px rgba(37, 40, 35, 0.03);
+  --elev-2: 0 4px 12px -2px rgba(37, 40, 35, 0.07), 0 2px 6px -3px rgba(37, 40, 35, 0.05);
+  --elev-3: 0 14px 30px -6px rgba(37, 40, 35, 0.1), 0 6px 14px -8px rgba(37, 40, 35, 0.07);
+  --elev-glow: 0 0 0 1px var(--accent-line);
+
+  /* Paper grain speck colour, consumed by the `paper` utility. */
+  --grain: rgba(37, 40, 35, 0.035);
 }
 
-html,
-body {
-  height: 100%;
+.dark {
+  /*
+   * ── Night archive ───────────────────────────────────────────────────────
+   * Not a slate dashboard: the ground is forest brought down to near-black and
+   * the ink is the ivory. Sage takes over as the accent, because deep forest
+   * cannot carry a glyph on a dark ground.
+   */
+  --paper: #141815;
+  --paper-subtle: #1a201c;
+  --surface: #1b2220;
+  --surface-2: #242c28;
+  --surface-3: #313b35;
+  --surface-glass: rgba(27, 34, 32, 0.9);
+  --surface-glass-border: #313b35;
+
+  --ink: #f3f1e7;
+  --ink-2: #dbd8ca;
+  --muted: #9ba394;
+  --faint: #737b6e;
+
+  --line: #2a332e;
+  --line-2: #3b453e;
+  --line-glow: rgba(184, 201, 176, 0.35);
+
+  --accent: #b8c9b0; /* Sage */
+  --accent-hover: #cddac6;
+  --accent-ink: #c6d6be;
+  --accent-on: #16201a;
+  --accent-soft: rgba(184, 201, 176, 0.14);
+  --accent-line: rgba(184, 201, 176, 0.32);
+  --accent-glow: rgba(184, 201, 176, 0.2);
+
+  --ok: #93b489;
+  --ok-soft: rgba(147, 180, 137, 0.14);
+  --ok-line: rgba(147, 180, 137, 0.32);
+  --ok-glow: rgba(147, 180, 137, 0.2);
+
+  --info: #8faeb8;
+  --info-soft: rgba(143, 174, 184, 0.14);
+  --info-line: rgba(143, 174, 184, 0.32);
+  --info-glow: rgba(143, 174, 184, 0.2);
+
+  --tier1: #a8b79c;
+  --tier1-soft: rgba(168, 183, 156, 0.14);
+  --tier1-line: rgba(168, 183, 156, 0.32);
+  --tier1-glow: rgba(168, 183, 156, 0.2);
+
+  --tier2: #cba96e;
+  --tier2-soft: rgba(203, 169, 110, 0.14);
+  --tier2-line: rgba(203, 169, 110, 0.32);
+  --tier2-glow: rgba(203, 169, 110, 0.2);
+
+  --danger: #d98570;
+  --danger-soft: rgba(217, 133, 112, 0.14);
+  --danger-line: rgba(217, 133, 112, 0.32);
+  --danger-glow: rgba(217, 133, 112, 0.2);
+
+  --warn: #d99a7c;
+  --warn-soft: rgba(217, 154, 124, 0.14);
+  --warn-line: rgba(217, 154, 124, 0.32);
+  --warn-glow: rgba(217, 154, 124, 0.2);
+
+  --neutral-soft: #242c28;
+  --neutral-line: #3b453e;
+
+  --seal: #d99a7c;
+  --seal-ink: #e0ab90;
+
+  /* Already dark, so the sidebar only needs to sit a shade under the surface. */
+  --nav: #171e1a;
+  --nav-ink: #f3f1e7;
+  --nav-muted: rgba(243, 241, 231, 0.58);
+  --nav-line: rgba(243, 241, 231, 0.1);
+  --nav-active: rgba(184, 201, 176, 0.16);
+
+  --elev-1: 0 1px 3px 0 rgba(0, 0, 0, 0.45);
+  --elev-2: 0 4px 12px -2px rgba(0, 0, 0, 0.55), 0 2px 6px -3px rgba(0, 0, 0, 0.45);
+  --elev-3: 0 14px 30px -6px rgba(0, 0, 0, 0.65), 0 6px 14px -8px rgba(0, 0, 0, 0.5);
+  --elev-glow: 0 0 0 1px var(--accent-line);
+
+  --grain: rgba(243, 241, 231, 0.03);
 }
 
-body {
-  @apply bg-slate-50 text-slate-900 antialiased;
-  font-feature-settings: 'cv02', 'cv03', 'cv04';
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-subtle: var(--paper-subtle);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-glass: var(--surface-glass);
+  --color-surface-glass-border: var(--surface-glass-border);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-line-glow: var(--line-glow);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-on: var(--accent-on);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --color-accent-glow: var(--accent-glow);
+
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-line: var(--ok-line);
+  --color-ok-glow: var(--ok-glow);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-line: var(--info-line);
+  --color-info-glow: var(--info-glow);
+  --color-tier1: var(--tier1);
+  --color-tier1-soft: var(--tier1-soft);
+  --color-tier1-line: var(--tier1-line);
+  --color-tier1-glow: var(--tier1-glow);
+  --color-tier2: var(--tier2);
+  --color-tier2-soft: var(--tier2-soft);
+  --color-tier2-line: var(--tier2-line);
+  --color-tier2-glow: var(--tier2-glow);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+  --color-danger-glow: var(--danger-glow);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-warn-glow: var(--warn-glow);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-line: var(--neutral-line);
+  --color-seal: var(--seal);
+  --color-seal-ink: var(--seal-ink);
+
+  --color-nav: var(--nav);
+  --color-nav-ink: var(--nav-ink);
+  --color-nav-muted: var(--nav-muted);
+  --color-nav-line: var(--nav-line);
+  --color-nav-active: var(--nav-active);
+
+  --shadow-e1: var(--elev-1);
+  --shadow-e2: var(--elev-2);
+  --shadow-e3: var(--elev-3);
+  --shadow-glow: var(--elev-glow);
+
+  /*
+   * ── Type ────────────────────────────────────────────────────────────────
+   * Two personalities. Playfair carries the editorial voice — page titles,
+   * the wordmark, marketing statements. Inter carries every working surface,
+   * where a serif would slow reading down.
+   */
+  --font-sans: 'Inter', var(--font-sans-src), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: 'Playfair Display', var(--font-serif-src), ui-serif, Georgia, Cambria, serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+
+  /*
+   * ── Motion ──────────────────────────────────────────────────────────────
+   * Paper has weight. It settles rather than snaps, and it never bounces twice.
+   */
+  --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --ease-paper: cubic-bezier(0.22, 0.85, 0.24, 1);
+
+  --animate-rise: rise 0.4s var(--ease-smooth) both;
+  --animate-fade: fade 0.25s var(--ease-smooth) both;
+  --animate-pop: pop 0.25s var(--ease-spring) both;
+  --animate-slide-in: slide-in 0.3s var(--ease-smooth) both;
+  --animate-slide-right: slide-right 0.3s var(--ease-smooth) both;
+  --animate-grow-x: grow-x 0.35s var(--ease-smooth) both;
+  --animate-halo: halo 2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+  --animate-scan: scan 2.4s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+
+  /* Paper physics */
+  --animate-unfold: unfold 0.9s var(--ease-paper) both;
+  --animate-settle: settle 0.7s var(--ease-paper) both;
+  --animate-stamp: stamp-land 0.55s cubic-bezier(0.3, 1.6, 0.5, 1) both;
+  --animate-drift: drift 9s ease-in-out infinite;
+  --animate-scan-once: scan-down 1.8s var(--ease-smooth) both;
+  --animate-ink: ink-in 0.6s var(--ease-smooth) both;
+  --animate-float: float 6s ease-in-out infinite;
 }
 
-/* Consistent focus ring across interactive elements. */
-:where(a, button, input, select, textarea):focus-visible {
-  @apply outline-none ring-2 ring-brand-500/50 ring-offset-1;
+/* ── Keyframe library ─────────────────────────────────────────────────────── */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slide-right {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes halo {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.9);
+  }
+  60%,
+  100% {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+
+@keyframes scan {
+  0%,
+  100% {
+    top: 0%;
+    opacity: 0.2;
+  }
+  50% {
+    top: 96%;
+    opacity: 0.8;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -150% 0;
+  }
+  to {
+    background-position: 250% 0;
+  }
+}
+
+/*
+ * A page opening out from its own fold. Used for the login-to-workspace
+ * transition and anywhere a surface should arrive as paper rather than as a div.
+ */
+@keyframes unfold {
+  0% {
+    opacity: 0;
+    transform: perspective(1400px) rotateX(-14deg) translateY(14px) scale(0.97);
+    transform-origin: top center;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(1400px) rotateX(0deg) translateY(0) scale(1);
+    transform-origin: top center;
+  }
+}
+
+/* A sheet dropped onto a desk: it overshoots a hair, then settles flat. */
+@keyframes settle {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) rotate(-0.8deg) scale(1.015);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(1px) rotate(0.2deg) scale(0.998);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+}
+
+/*
+ * A rubber stamp meeting the page — fast approach, hard stop, tiny rebound.
+ * Scale only: the resting angle belongs to the element, so two stamps on one
+ * page can land at different tilts without needing two keyframes.
+ */
+@keyframes stamp-land {
+  0% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(0.94);
+  }
+  75% {
+    transform: scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Paper fragments idling before they converge. */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  33% {
+    transform: translate(4px, -6px) rotate(4deg);
+  }
+  66% {
+    transform: translate(-5px, 4px) rotate(-3deg);
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+/* One pass of the analysis line down a document. */
+@keyframes scan-down {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+
+/*
+ * Text arriving as though absorbed into the fibre rather than drawn on top of
+ * it. Blur and scale only — animating letter-spacing here would fight whatever
+ * tracking the element itself sets.
+ */
+@keyframes ink-in {
+  0% {
+    opacity: 0;
+    filter: blur(5px);
+    transform: scale(1.035);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+}
+
+/*
+ * Paper fragments travelling to the centre and dissolving as the mark forms.
+ * Start offset and rotation come in as `--tx` / `--ty` / `--r` per fragment, so
+ * fourteen scraps share one keyframe instead of fourteen.
+ */
+@keyframes converge {
+  0% {
+    opacity: 0;
+    transform: translate(var(--tx, 0), var(--ty, 0)) rotate(var(--r, 0deg)) scale(1);
+  }
+  16% {
+    opacity: 1;
+  }
+  68% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0deg) scale(0.3);
+  }
+}
+
+/* ── Base layer ───────────────────────────────────────────────────────────── */
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  .theme-ready,
+  .theme-ready * {
+    transition:
+      background-color 0.2s var(--ease-smooth),
+      border-color 0.2s var(--ease-smooth),
+      color 0.2s var(--ease-smooth);
+  }
+
+  ::selection {
+    background-color: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Native controls default to the platform blue, which is the one hue this
+     palette does not contain. */
+  :where(input[type='checkbox'], input[type='radio'], progress) {
+    accent-color: var(--accent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--line-2);
+    border-radius: 99px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Design system utilities ──────────────────────────────────────────────── */
 
 @utility card {
-  @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+  border-radius: 0.75rem;
+  border: 1px solid var(--line);
+  background-color: var(--surface);
+  box-shadow: var(--elev-1);
+  transition:
+    border-color 0.18s var(--ease-smooth),
+    box-shadow 0.18s var(--ease-smooth),
+    transform 0.18s var(--ease-smooth);
+}
+
+@utility card-interactive {
+  @apply card;
+  &:hover {
+    border-color: var(--line-2);
+    box-shadow: var(--elev-2);
+    transform: translateY(-1px);
+  }
+}
+
+/*
+ * A document surface. `card` with fibre: a barely-there speck pattern that
+ * reads as paper stock rather than as a texture, plus a marginally squarer
+ * corner because sheets are cut, not moulded.
+ */
+@utility paper {
+  position: relative;
+  border-radius: 0.375rem;
+  border: 1px solid var(--line);
+  background-color: var(--surface);
+  box-shadow: var(--elev-2);
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background-image:
+      radial-gradient(var(--grain) 0.5px, transparent 0.5px),
+      radial-gradient(var(--grain) 0.5px, transparent 0.5px);
+    background-size:
+      11px 11px,
+      11px 11px;
+    background-position:
+      0 0,
+      5.5px 5.5px;
+  }
+}
+
+/*
+ * The edges of the sheets underneath. Two offset plates, so a collection reads
+ * as a stack you could pick up. Pair with `group` to separate them on hover.
+ */
+@utility paper-stack {
+  position: relative;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    border: 1px solid var(--line);
+    background-color: var(--surface);
+    transition: transform 0.35s var(--ease-paper);
+  }
+  &::before {
+    transform: translate(3px, 3px) rotate(1.2deg);
+  }
+  &::after {
+    transform: translate(6px, 6px) rotate(2.4deg);
+  }
+}
+
+@utility paper-stack-open {
+  &::before {
+    transform: translate(5px, -3px) rotate(-2.5deg);
+  }
+  &::after {
+    transform: translate(10px, 5px) rotate(4deg);
+  }
+}
+
+/*
+ * A rubber-stamp impression. Letterpressed rather than printed: the ink sits
+ * slightly transparent and the rule is doubled, the way a real seal bites.
+ */
+@utility stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 2px solid currentColor;
+  border-radius: 0.25rem;
+  padding: 0.3rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.88;
+  box-shadow: inset 0 0 0 1px currentColor;
+  mix-blend-mode: multiply;
+}
+
+.dark .stamp {
+  mix-blend-mode: screen;
+}
+
+@utility glass {
+  background-color: var(--surface-glass);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+  border: 1px solid var(--surface-glass-border);
+}
+
+@utility glass-card {
+  border-radius: 0.75rem;
+  @apply glass;
+  box-shadow: var(--elev-1);
 }
 
 @utility label {
-  @apply block text-sm font-medium text-slate-700;
+  display: block;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  color: var(--ink-2);
 }
 
 @utility input {
-  @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
-         placeholder:text-slate-400 focus:border-brand-500;
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid var(--line-2);
+  background-color: var(--surface);
+  padding: 0.55rem 0.8rem;
+  font-size: 0.875rem;
+  color: var(--ink);
+  transition:
+    border-color 0.15s var(--ease-smooth),
+    box-shadow 0.15s var(--ease-smooth);
+
+  &::placeholder {
+    color: var(--faint);
+  }
+  &:hover:not(:focus) {
+    border-color: var(--muted);
+  }
+  &:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  &:disabled {
+    background-color: var(--surface-2);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+}
+
+/*
+ * A field ruled like a form line rather than boxed. Used on the access
+ * document, where a boxed input would break the illusion of a printed record.
+ */
+@utility input-ruled {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line-2);
+  border-radius: 0;
+  background-color: transparent;
+  padding: 0.4rem 0.1rem;
+  font-size: 0.9375rem;
+  color: var(--ink);
+  transition:
+    border-color 0.2s var(--ease-smooth),
+    box-shadow 0.2s var(--ease-smooth);
+
+  &::placeholder {
+    color: var(--faint);
+  }
+  &:focus {
+    outline: none;
+    border-bottom-color: var(--accent);
+    box-shadow: 0 1px 0 0 var(--accent);
+  }
 }
 
 @utility btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2
-         text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.95rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  letter-spacing: -0.005em;
+  transition:
+    background-color 0.15s var(--ease-smooth),
+    border-color 0.15s var(--ease-smooth),
+    color 0.15s var(--ease-smooth),
+    transform 0.12s var(--ease-paper),
+    box-shadow 0.15s var(--ease-smooth);
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+  &:active:not(:disabled) {
+    transform: translateY(0) scale(0.985);
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
 }
 
 @utility btn-primary {
-  @apply btn bg-brand-600 text-white hover:bg-brand-700;
+  @apply btn;
+  background-color: var(--accent);
+  color: var(--accent-on);
+  box-shadow: var(--elev-1);
+
+  &:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+    box-shadow: var(--elev-2);
+  }
 }
 
 @utility btn-secondary {
-  @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+  @apply btn;
+  border: 1px solid var(--line-2);
+  background-color: var(--surface);
+  color: var(--ink-2);
+  box-shadow: var(--elev-1);
+
+  &:hover:not(:disabled) {
+    background-color: var(--surface-2);
+    border-color: var(--muted);
+    color: var(--ink);
+    box-shadow: var(--elev-2);
+  }
+}
+
+@utility btn-ghost {
+  @apply btn;
+  color: var(--muted);
+  background-color: transparent;
+
+  &:hover:not(:disabled) {
+    background-color: var(--surface-2);
+    color: var(--ink);
+  }
+}
+
+@utility chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 0.375rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.1rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: all 0.15s var(--ease-smooth);
+}
+
+@utility rise-in {
+  animation: rise 0.35s var(--ease-smooth) both;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+
+@utility fade-in {
+  animation: fade 0.25s var(--ease-smooth) both;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+
+@utility pop-in {
+  animation: pop 0.25s var(--ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+
+/* A sheet landing on the desk, staggered by `--i` like the other entrances. */
+@utility settle-in {
+  animation: settle 0.6s var(--ease-paper) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+/* A surface opening out of its fold. Reserved for major transitions. */
+@utility unfold-in {
+  animation: unfold 0.9s var(--ease-paper) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+/* One paper fragment on its way to becoming part of the mark. */
+@utility converge-in {
+  animation: converge 1.5s var(--ease-paper) both;
+  animation-delay: calc(var(--d, 0) * 1ms);
+}
+
+/*
+ * Loading placeholder. Referenced by both loading.tsx files and the login /
+ * signup Suspense fallbacks, so without it every placeholder collapses to an
+ * unstyled zero-height div and the loading states render as a blank frame.
+ */
+@utility skeleton {
+  border-radius: 0.375rem;
+  background-image: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 37%,
+    var(--surface-2) 63%
+  );
+  background-size: 250% 100%;
+  animation: var(--animate-shimmer);
+}
+
+@utility link {
+  color: var(--accent-ink);
+  font-weight: 500;
+  text-decoration-color: var(--accent-line);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s var(--ease-smooth);
+
+  &:hover {
+    text-decoration-line: underline;
+    text-decoration-color: var(--accent-ink);
+  }
+}
+
+/* The editorial voice: page titles, the wordmark, marketing statements. */
+@utility display {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+/*
+ * Small caps-and-tracking treatment for document metadata labels — "DOCUMENT
+ * ID", "INSTITUTIONAL EMAIL". The register that makes a screen read as a form.
+ */
+@utility record-label {
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
 }

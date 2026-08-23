@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { redirect } from 'next/navigation';
 import { createClient } from './supabase/server';
 import type { Profile } from './types';
@@ -14,13 +15,22 @@ const PROFILE_COLUMNS = 'id, full_name, role, department_id';
  * Resolves the signed-in user and their application profile.
  * Redirects to /login when unauthenticated, so callers can assume a session.
  *
+ * Wrapped in React's `cache()`, which is what makes this affordable. The layout
+ * and the page it renders both need the session, and App Router renders them
+ * concurrently — so without memoisation every navigation paid for two
+ * `getUser()` calls and two `profiles` selects, four network round trips to
+ * Supabase where one pair suffices. `cache()` scopes the result to a single
+ * request, so the second caller gets the in-flight promise instead of issuing
+ * its own query. Server Actions each get their own cache scope, which is
+ * correct: they are separate requests.
+ *
  * A profile is normally created by the `on_auth_user_created` trigger. That
  * trigger is AFTER INSERT, so accounts that predate it have no profile row —
  * which used to throw here and lock the account out until someone inserted the
  * row by hand. We now recover by calling ensure_profile(), which creates the
  * missing row as `student` from the caller's own auth record.
  */
-export async function requireSession(): Promise<SessionContext> {
+export const requireSession = cache(async function requireSession(): Promise<SessionContext> {
   const supabase = await createClient();
 
   const {
@@ -77,10 +87,11 @@ export async function requireSession(): Promise<SessionContext> {
   }
 
   return { userId: user.id, email: user.email ?? '', profile: row };
-}
+});
 
-/** Returns the session, or null instead of redirecting. */
-export async function getOptionalSession(): Promise<SessionContext | null> {
+/** Returns the session, or null instead of redirecting. Memoised per request for
+ *  the same reason as requireSession(). */
+export const getOptionalSession = cache(async function getOptionalSession(): Promise<SessionContext | null> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -95,4 +106,4 @@ export async function getOptionalSession(): Promise<SessionContext | null> {
 
   if (!profile) return null;
   return { userId: user.id, email: user.email ?? '', profile: profile as Profile };
-}
+});

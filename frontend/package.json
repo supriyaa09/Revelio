@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --turbopack",
+    "dev:webpack": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -11,6 +12,7 @@
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
     "test:processing": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-processing.mts",
     "test:search": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-search.mts",
+    "test:organize": "node --experimental-strip-types --import ./scripts/register-hook.mjs scripts/test-organize.mts",
     "probe:schema": "node scripts/probe-schema.mjs",
     "probe:grants": "node scripts/probe-grants.mjs",
     "probe:ai": "node --env-file-if-exists=.env.local --experimental-strip-types --import ./scripts/register-hook.mjs scripts/probe-ai.mts",

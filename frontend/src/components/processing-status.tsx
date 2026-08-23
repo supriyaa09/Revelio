@@ -9,11 +9,11 @@ import type { ProcessingState } from '@/lib/types';
 type Stage = 'uploaded' | 'extracting' | 'analyzing' | 'indexing' | 'ready' | 'failed';
 
 const STEPS: { stage: Stage; label: string }[] = [
-  { stage: 'uploaded', label: 'Uploaded' },
-  { stage: 'extracting', label: 'Extracting text' },
-  { stage: 'analyzing', label: 'Analyzing' },
-  { stage: 'indexing', label: 'Indexing' },
-  { stage: 'ready', label: 'Ready' },
+  { stage: 'uploaded', label: 'Uploaded & Verified' },
+  { stage: 'extracting', label: 'Extracting OCR / Text' },
+  { stage: 'analyzing', label: 'AI Synthesis' },
+  { stage: 'indexing', label: 'Taxonomy Indexing' },
+  { stage: 'ready', label: 'Repository Ready' },
 ];
 
 interface Props {
@@ -25,23 +25,8 @@ interface Props {
   canProcess: boolean;
 }
 
-/**
- * Versions this browser tab has already auto-started, so a run is never fired
- * twice for the same version.
- *
- * Module scope rather than a ref on purpose. React StrictMode invokes effects
- * mount → cleanup → mount in development, and the `router.refresh()` at the end
- * of a run re-renders this component with new props; a per-instance guard would
- * survive the first but a remount would clear it and POST again. Keying by
- * version id is the honest scope: the guard is about the work, not the widget.
- */
 const autoStarted = new Set<string>();
 
-/**
- * Shows the real pipeline state, read from document_versions. Nothing here is
- * simulated: the stage comes from the database, and a failure shows the actual
- * recorded error rather than a placeholder.
- */
 export function ProcessingStatus({
   documentId,
   versionId,
@@ -66,8 +51,6 @@ export function ProcessingStatus({
     }
   }, []);
 
-  // Poll while work is in flight. The pipeline writes each stage as it goes, so
-  // this reflects genuine progress rather than a timed animation.
   useEffect(() => {
     if (status !== 'processing' && status !== 'pending') {
       stopPolling();
@@ -77,6 +60,8 @@ export function ProcessingStatus({
 
     const supabase = createClient();
     pollRef.current = setInterval(async () => {
+      if (document.hidden) return;
+
       const { data } = await supabase
         .from('document_versions')
         .select('processing_status, processing_stage, processing_error')
@@ -122,14 +107,6 @@ export function ProcessingStatus({
     }
   }, [documentId, router]);
 
-  // Start processing by itself the first time an unprocessed version is opened.
-  //
-  // Upload navigates straight here, so this is what makes "upload a file and
-  // watch it be understood" happen without the user having to know a Process
-  // button exists. It is deliberately scoped to `pending`: a version that
-  // already failed is NOT retried automatically, because a failure that repeats
-  // on every page view is an infinite loop that burns OCR and AI budget. Retry
-  // stays a human decision.
   useEffect(() => {
     if (!canProcess) return;
     if (status !== 'pending') return;
@@ -142,48 +119,90 @@ export function ProcessingStatus({
   const activeIndex = stage === 'failed' ? -1 : STEPS.findIndex((s) => s.stage === stage);
   const busy = running || status === 'processing';
 
+  const progress =
+    status === 'completed' ? 1 : activeIndex <= 0 ? 0 : activeIndex / (STEPS.length - 1);
+
   return (
-    <section className="card p-5">
+    <section className="glass-card animate-rise p-5 shadow-e1">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="flex items-center gap-2 font-medium">
-          <Sparkles className="size-4 text-slate-400" />
-          Processing
+        <h2 className="flex items-center gap-2 font-semibold text-ink">
+          <Sparkles
+            className={`size-4 ${busy ? 'animate-pulse text-accent-ink' : 'text-accent'}`}
+          />
+          Pipeline Status
         </h2>
         {canProcess && (
           <button
             type="button"
             onClick={run}
             disabled={busy}
-            className="btn-secondary px-3 py-1.5 text-xs"
+            className="btn-secondary group px-3 py-1.5 text-xs font-semibold shadow-xs"
           >
             {busy ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin text-accent" />
             ) : (
-              <RefreshCw className="size-3.5" />
+              <RefreshCw
+                className="size-3.5 transition-transform duration-500 group-hover:rotate-180"
+              />
             )}
             {status === 'completed' ? 'Reprocess' : status === 'failed' ? 'Retry' : 'Process'}
           </button>
         )}
       </div>
 
-      <ol className="mt-4 space-y-2">
+      {/* Timeline with animated liquid progress rail */}
+      <ol className="relative mt-4.5 space-y-3.5">
+        <span
+          aria-hidden
+          className="absolute left-[0.75rem] top-2.5 h-[calc(100%-1.5rem)] w-[2px]
+                     rounded-full bg-line"
+        />
+        <span
+          aria-hidden
+          className={`absolute left-[0.75rem] top-2.5 w-[2px] origin-top rounded-full shadow-glow
+                      transition-[height] duration-700 ease-[var(--ease-smooth)]
+                      ${status === 'failed' ? 'bg-danger' : 'bg-accent'}`}
+          style={{ height: `calc((100% - 1.5rem) * ${status === 'failed' ? 1 : progress})` }}
+        />
+
         {STEPS.map((step, i) => {
           const done = status === 'completed' || (activeIndex >= 0 && i < activeIndex);
           const current = activeIndex === i && status !== 'completed';
+
           return (
-            <li key={step.stage} className="flex items-center gap-2.5 text-sm">
+            <li key={step.stage} className="relative flex items-center gap-3.5 text-sm">
+              <span className="relative grid size-6.5 shrink-0 place-items-center">
+                {current && busy && (
+                  <span
+                    aria-hidden
+                    className="absolute size-7 rounded-full bg-accent/40 animate-halo"
+                  />
+                )}
+                <span
+                  className={`relative grid size-6 place-items-center rounded-full text-[10px]
+                              font-bold transition-all duration-500 ease-[var(--ease-spring)]
+                              ${
+                                done
+                                  ? 'bg-accent text-accent-on shadow-xs'
+                                  : current
+                                    ? 'scale-110 bg-surface text-accent-ink ring-2 ring-accent'
+                                    : 'bg-surface-2 text-faint ring-1 ring-line'
+                              }`}
+                >
+                  {done ? (
+                    <Check className="size-3.5 animate-pop" strokeWidth={3} />
+                  ) : current ? (
+                    <Loader2 className="size-3 animate-spin text-accent-ink" />
+                  ) : (
+                    i + 1
+                  )}
+                </span>
+              </span>
               <span
-                className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${
-                  done
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : current
-                      ? 'bg-brand-100 text-brand-700'
-                      : 'bg-slate-100 text-slate-400'
+                className={`transition-colors duration-300 ${
+                  current ? 'font-semibold text-ink' : done ? 'font-medium text-ink-2' : 'text-faint'
                 }`}
               >
-                {done ? <Check className="size-3" /> : current ? <Loader2 className="size-3 animate-spin" /> : i + 1}
-              </span>
-              <span className={done || current ? 'text-slate-900' : 'text-slate-400'}>
                 {step.label}
               </span>
             </li>
@@ -192,34 +211,33 @@ export function ProcessingStatus({
       </ol>
 
       {status === 'failed' && (
-        <div className="mt-4 rounded-lg bg-red-50 px-3 py-2">
-          <p className="flex items-center gap-1.5 text-sm font-medium text-red-800">
+        <div className="animate-pop mt-4 rounded-xl border border-danger-line bg-danger-soft px-3.5 py-3">
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-danger">
             <AlertTriangle className="size-4" />
-            Processing failed
+            Extraction Error
           </p>
-          {/* The real recorded reason, not a generic message. */}
-          <p className="mt-1 break-words font-mono text-xs text-red-700">
-            {error ?? 'No reason recorded.'}
+          <p className="mt-1 break-words font-mono text-xs leading-relaxed text-danger">
+            {error ?? 'Unknown processing error.'}
           </p>
-          <p className="mt-1.5 text-xs text-red-700">
-            The uploaded file and all versions are intact. You can retry.
+          <p className="mt-2 text-xs text-danger/80">
+            Source file is safely stored. Press Retry to rerun the extraction worker.
           </p>
         </div>
       )}
 
       {busy && (
-        <p className="mt-3 text-xs text-slate-500">
+        <p className="animate-fade mt-3.5 rounded-lg bg-surface-2 p-2.5 text-xs leading-relaxed text-muted border border-line">
           {auto
-            ? 'Started automatically. Extracting text, then analyzing — this can take up to a minute if the pages need OCR.'
-            : 'Working. Extracting text, then analyzing.'}
+            ? 'Extraction initialized automatically. Running text layers & neural OCR...'
+            : 'Processing document pipeline...'}
         </p>
       )}
 
       {status === 'pending' && !busy && (
-        <p className="mt-3 text-xs text-slate-500">
+        <p className="mt-3.5 text-xs leading-relaxed text-muted">
           {canProcess
-            ? 'Not processed yet. Press Process to extract text and analyze.'
-            : 'Not processed yet. Only the document owner or the reviewer tier can process it.'}
+            ? 'Document queued. Press Process to run text extraction & AI synthesis.'
+            : 'Pending extraction. Authorized reviewers or owner can initiate.'}
         </p>
       )}
     </section>

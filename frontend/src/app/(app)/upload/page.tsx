@@ -1,12 +1,16 @@
 import { requireSession } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { UploadForm } from '@/components/upload-form';
+import { PageHeader } from '@/components/ui';
 
 export default async function UploadPage() {
-  await requireSession();
   const supabase = await createClient();
 
-  const [{ data: departments }, { data: categories }] = await Promise.all([
+  // Session and taxonomy in one round trip. The dropdown contents do not depend
+  // on who is asking — RLS already scopes them — so serialising these was pure
+  // added latency.
+  const [, { data: departments }, { data: categories }] = await Promise.all([
+    requireSession(),
     supabase.from('departments').select('id, name, slug, sort_order').order('sort_order'),
     supabase
       .from('categories')
@@ -17,15 +21,11 @@ export default async function UploadPage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-2xl font-semibold tracking-tight">Upload document</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        The file is stored privately and filed automatically. You can override the folder if the
-        suggestion is wrong.
-      </p>
-
-      <div className="mt-6">
-        <UploadForm departments={departments ?? []} categories={categories ?? []} />
-      </div>
+      <PageHeader
+        title="Upload document"
+        description="The file is stored privately and filed automatically. You can override the folder if the suggestion is wrong."
+      />
+      <UploadForm departments={departments ?? []} categories={categories ?? []} />
     </div>
   );
 }

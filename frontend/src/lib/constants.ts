@@ -18,15 +18,23 @@ export const WORKFLOW_LABELS: Record<WorkflowState, string> = {
   changes_requested: 'Changes requested',
 };
 
-/** Tailwind classes per state. Kept here so badges stay consistent everywhere. */
+/**
+ * Tailwind classes per state. Kept here so badges stay consistent everywhere.
+ *
+ * These reference the semantic tokens in globals.css rather than Tailwind's
+ * stock palette, which is what lets one definition serve both themes. Note that
+ * no state uses the amber brand accent: a status badge must never be mistaken
+ * for a brand element. The two review tiers deliberately run violet → fuchsia
+ * so escalation reads as a temperature change in the queue.
+ */
 export const WORKFLOW_STYLES: Record<WorkflowState, string> = {
-  draft: 'bg-slate-100 text-slate-700 ring-slate-200',
-  submitted: 'bg-blue-50 text-blue-700 ring-blue-200',
-  faculty_review: 'bg-amber-50 text-amber-700 ring-amber-200',
-  hod_review: 'bg-violet-50 text-violet-700 ring-violet-200',
-  approved: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-  rejected: 'bg-red-50 text-red-700 ring-red-200',
-  changes_requested: 'bg-orange-50 text-orange-700 ring-orange-200',
+  draft: 'bg-neutral-soft text-muted ring-neutral-line',
+  submitted: 'bg-info-soft text-info ring-info-line',
+  faculty_review: 'bg-tier1-soft text-tier1 ring-tier1-line',
+  hod_review: 'bg-tier2-soft text-tier2 ring-tier2-line',
+  approved: 'bg-ok-soft text-ok ring-ok-line',
+  rejected: 'bg-danger-soft text-danger ring-danger-line',
+  changes_requested: 'bg-warn-soft text-warn ring-warn-line',
 };
 
 export const PROCESSING_LABELS: Record<ProcessingState, string> = {

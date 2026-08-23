@@ -21,21 +21,31 @@ export function UserMenu({
 
   return (
     <div className="flex items-center gap-3">
-      <div className="hidden text-right sm:block">
-        <div className="text-sm font-medium leading-tight">{fullName || email}</div>
-        <div className="text-xs text-slate-500">{ROLE_LABELS[role]}</div>
+      <div className="hidden text-right leading-tight sm:block">
+        <div className="text-sm font-semibold text-ink">{fullName || email}</div>
+        <div className="text-[10px] font-bold uppercase tracking-wider text-accent-ink">{ROLE_LABELS[role]}</div>
       </div>
-      <div className="grid size-8 place-items-center rounded-full bg-slate-200 text-xs font-semibold text-slate-700">
+
+      <div
+        title={`${fullName || email} (${ROLE_LABELS[role]})`}
+        className="relative grid size-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-accent-soft to-surface-2
+                   font-mono text-xs font-bold text-accent-ink ring-1 ring-accent-line shadow-xs transition-transform hover:scale-105"
+      >
         {initials}
       </div>
+
       <form action="/auth/signout" method="post">
         <button
           type="submit"
           title="Sign out"
           aria-label="Sign out"
-          className="grid size-8 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+          className="group grid size-9 place-items-center rounded-xl border border-line bg-surface text-muted transition-all
+                     hover:border-danger-line hover:bg-danger-soft hover:text-danger shadow-xs"
         >
-          <LogOut className="size-4" />
+          <LogOut
+            className="size-4 transition-transform duration-300
+                       group-hover:translate-x-0.5"
+          />
         </button>
       </form>
     </div>

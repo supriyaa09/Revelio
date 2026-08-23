@@ -1,13 +1,15 @@
 import Link from 'next/link';
-import { Search as SearchIcon, FileText, Calendar, Tag, User } from 'lucide-react';
+import { Calendar, FileText, Search as SearchIcon, SlidersHorizontal, Sparkles, Tag, User } from 'lucide-react';
 import { requireSession } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { StatusBadge } from '@/components/badges';
-import { EmptyState, formatDate, formatBytes } from '@/components/ui';
+import { EmptyState, ErrorNote, PageHeader, formatBytes, formatDate, stagger } from '@/components/ui';
 import { WORKFLOW_LABELS } from '@/lib/constants';
 import type { WorkflowState } from '@/lib/types';
 import { parseSearchQuery, describeFilters } from '@/lib/search/parse';
 import { executeSearch, type SearchFilters } from '@/lib/search/query';
+
+const EXAMPLES = ['approved documents', 'by Sohail', 'after:2026-08-01 #budget'];
 
 export default async function SearchPage({
   searchParams,
@@ -15,21 +17,11 @@ export default async function SearchPage({
   searchParams: Promise<{ q?: string; status?: string; cat?: string }>;
 }) {
   const { q = '', status = '', cat = '' } = await searchParams;
-  await requireSession();
   const supabase = await createClient();
 
-  // Load categories for dropdown
-  const { data: categories } = await supabase
-    .from('categories')
-    .select('id, name, department_id')
-    .eq('is_active', true)
-    .order('sort_order');
-
-  // ── Parse the search query ────────────────────────────────────────────
   const trimmed = q.trim();
   const parsed = parseSearchQuery(trimmed);
 
-  // Explicit dropdown filters override parsed values
   const filters: SearchFilters = {
     ...parsed,
     status: (status as WorkflowState) || parsed.status,
@@ -41,48 +33,63 @@ export default async function SearchPage({
     filters.documentType || filters.tags.length || filters.dateFrom || filters.dateTo,
   );
 
-  // ── Execute search ────────────────────────────────────────────────────
-  let docs = filters.status || filters.categoryId || filters.uploaderName ||
+  const willSearch = Boolean(
+    filters.status || filters.categoryId || filters.uploaderName ||
     filters.documentType || filters.tags.length || filters.dateFrom ||
-    filters.dateTo || filters.text
-    ? (await executeSearch(supabase, filters))
-    : { docs: [], error: null as string | null, ftsHits: null as number | null };
+    filters.dateTo || filters.text,
+  );
 
-  // Build filter chips from parsed query
+  const [, { data: categories }, docs] = await Promise.all([
+    requireSession(),
+    supabase
+      .from('categories')
+      .select('id, name, department_id')
+      .eq('is_active', true)
+      .order('sort_order'),
+    willSearch
+      ? executeSearch(supabase, filters)
+      : Promise.resolve({ docs: [], error: null as string | null, ftsHits: null as number | null }),
+  ]);
+
   const chips = describeFilters(parsed, WORKFLOW_LABELS);
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <h1 className="text-2xl font-semibold tracking-tight">Search</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Search with natural language. Try{' '}
-        <code className="rounded bg-slate-100 px-1 text-xs">approved documents</code>,{' '}
-        <code className="rounded bg-slate-100 px-1 text-xs">by Sohail</code>, or{' '}
-        <code className="rounded bg-slate-100 px-1 text-xs">after:2026-08-01 #budget</code>.
-      </p>
+    <div className="mx-auto max-w-3xl space-y-7">
+      <PageHeader
+        eyebrow="FULL-TEXT & METADATA"
+        title="Search Repository"
+        description="Search with natural language. Status, author, date ranges, and hashtags are automatically parsed."
+      />
 
       {/* ── Search form ─────────────────────────────────────────────────── */}
-      <form className="card mt-5 space-y-3 p-4" method="get">
-        <div className="flex gap-3">
-          <div className="relative min-w-0 flex-1">
-            <SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-            <input
-              id="q"
-              name="q"
-              defaultValue={q}
-              className="input pl-9"
-              placeholder="Search documents…"
-              autoFocus
-            />
-          </div>
-          <button type="submit" className="btn-primary">
-            <SearchIcon className="size-4" />
+      <form className="glass-card animate-rise overflow-hidden shadow-e2" method="get">
+        <div className="flex items-center gap-3 px-4.5">
+          <SearchIcon className="size-5 shrink-0 text-accent-ink" />
+          <input
+            id="q"
+            name="q"
+            defaultValue={q}
+            className="h-14 w-full bg-transparent text-[1rem] font-medium text-ink
+                       placeholder:text-faint focus-visible:outline-none"
+            placeholder="Search documents by text, tag, status, or author…"
+            autoFocus
+          />
+          <button type="submit" className="btn-primary my-2 shrink-0 px-5 shadow-xs">
             Search
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-3">
-          <select name="status" defaultValue={status} className="input w-auto text-sm" aria-label="Status">
+        <div className="flex flex-wrap items-center gap-3 border-t border-line bg-surface-2/70 px-4.5 py-3">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-faint">
+            <SlidersHorizontal className="size-3.5 shrink-0" />
+            Filters:
+          </div>
+          <select
+            name="status"
+            defaultValue={status}
+            className="input w-auto py-1.5 text-xs font-medium"
+            aria-label="Status"
+          >
             <option value="">Any status</option>
             {Object.entries(WORKFLOW_LABELS).map(([value, label]) => (
               <option key={value} value={value}>
@@ -91,7 +98,12 @@ export default async function SearchPage({
             ))}
           </select>
 
-          <select name="cat" defaultValue={cat} className="input w-auto text-sm" aria-label="Category">
+          <select
+            name="cat"
+            defaultValue={cat}
+            className="input w-auto py-1.5 text-xs font-medium"
+            aria-label="Category"
+          >
             <option value="">Any folder</option>
             {(categories ?? []).map((c) => (
               <option key={c.id} value={c.id}>
@@ -99,17 +111,46 @@ export default async function SearchPage({
               </option>
             ))}
           </select>
+
+          {hasFilters && (
+            <Link href="/search" className="ml-auto text-xs font-semibold text-accent-ink transition-colors hover:underline">
+              Clear filters
+            </Link>
+          )}
         </div>
       </form>
 
+      {/* ── Try-these examples ──────────────────────────────────────────── */}
+      {!hasFilters && (
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="flex items-center gap-1 text-xs font-semibold text-faint">
+            <Sparkles className="size-3 text-accent" />
+            Try searching:
+          </span>
+          {EXAMPLES.map((ex, i) => (
+            <Link
+              key={ex}
+              href={`/search?q=${encodeURIComponent(ex)}`}
+              style={stagger(i)}
+              className="fade-in chip border border-line bg-surface font-mono text-[11px] text-ink-2
+                         transition-all duration-200 hover:-translate-y-0.5 hover:border-accent-line
+                         hover:bg-accent-soft hover:text-accent-ink shadow-xs"
+            >
+              {ex}
+            </Link>
+          ))}
+        </div>
+      )}
+
       {/* ── Active filter chips ──────────────────────────────────────────── */}
       {chips.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-slate-500">Detected:</span>
-          {chips.map((chip) => (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-bold uppercase tracking-wider text-faint">Detected terms:</span>
+          {chips.map((chip, i) => (
             <span
               key={chip.key}
-              className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-brand-200"
+              style={stagger(i)}
+              className="chip fade-in bg-accent-soft font-semibold text-accent-ink ring-1 ring-inset ring-accent-line shadow-xs"
             >
               {chip.label}
             </span>
@@ -118,72 +159,75 @@ export default async function SearchPage({
       )}
 
       {/* ── Results ─────────────────────────────────────────────────────── */}
-      <div className="mt-5">
+      <div>
         {docs.error ? (
-          <div className="card p-6 text-sm text-red-700">Search failed: {docs.error}</div>
+          <ErrorNote>Search failed: {docs.error}</ErrorNote>
         ) : !hasFilters ? (
           <EmptyState
             icon={SearchIcon}
             title="Search your documents"
-            description="Enter a term, filter by status or folder, or use smart syntax like status:approved, by Name, after:2026-01-01, #tag."
+            description="Enter any keyword, filter by status or folder, or use smart syntax like status:approved, by Name, after:2026-01-01, #budget."
           />
         ) : docs.docs.length === 0 ? (
           <EmptyState
             icon={SearchIcon}
-            title="No matches"
-            description="Try a different term, or clear the filters."
+            title="No matching documents found"
+            description="Try a different search query or clear the active status and category filters."
           />
         ) : (
           <>
-            <p className="mb-3 text-sm text-slate-500">
-              {docs.docs.length} {docs.docs.length === 1 ? 'result' : 'results'}
-              {docs.ftsHits !== null && docs.ftsHits !== docs.docs.length &&
-                ` (${docs.ftsHits} content ${docs.ftsHits === 1 ? 'match' : 'matches'})`}
-            </p>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm text-muted">
+                Found <span className="font-bold tabular-nums text-ink">{docs.docs.length}</span>{' '}
+                {docs.docs.length === 1 ? 'document' : 'documents'}
+                {docs.ftsHits !== null && docs.ftsHits !== docs.docs.length &&
+                  ` (${docs.ftsHits} full-text ${docs.ftsHits === 1 ? 'hit' : 'hits'})`}
+              </p>
+            </div>
 
-            <ul className="space-y-3">
-              {docs.docs.map((doc) => (
-                <li key={doc.id}>
+            <ul className="card divide-y divide-line overflow-hidden shadow-e1">
+              {docs.docs.map((doc, i) => (
+                <li key={doc.id} className="rise-in" style={stagger(i)}>
                   <Link
                     href={`/documents/${doc.id}`}
-                    className="card block p-4 transition hover:border-brand-300 hover:shadow"
+                    className="group block px-4.5 py-4 transition-colors duration-200 hover:bg-surface-2/70"
                   >
                     {/* Row 1: Title + Status */}
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{doc.title}</span>
+                      <span className="font-semibold text-ink transition-colors group-hover:text-accent-ink">
+                        {doc.title}
+                      </span>
                       <StatusBadge state={doc.workflow_status} />
                     </div>
 
                     {/* Row 2: Description */}
                     {doc.description && (
-                      <p className="mt-1 line-clamp-2 text-sm text-slate-600">
+                      <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-ink-2">
                         {doc.description}
                       </p>
                     )}
 
                     {/* Row 3: Metadata */}
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                    <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
                       {doc.owner && (
-                        <span className="inline-flex items-center gap-1">
-                          <User className="size-3" />
+                        <span className="inline-flex items-center gap-1 font-medium text-ink-2">
+                          <User className="size-3 text-faint" />
                           {doc.owner.full_name}
                         </span>
                       )}
                       {doc.category && (
-                        <span className="inline-flex items-center gap-1">
-                          <FileText className="size-3" />
+                        <span className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-ink-2 ring-1 ring-line">
+                          <FileText className="size-3 text-accent" />
                           {doc.category.name}
                         </span>
                       )}
-                      {doc.document_type && (
-                        <span className="capitalize">{doc.document_type}</span>
-                      )}
+                      {doc.document_type && <span className="capitalize font-medium">{doc.document_type}</span>}
                       <span className="inline-flex items-center gap-1">
-                        <Calendar className="size-3" />
+                        <Calendar className="size-3 text-faint" />
                         {formatDate(doc.updated_at)}
                       </span>
                       {doc.current_version && (
-                        <span>
+                        <span className="truncate font-mono text-[11px] text-faint">
                           {doc.current_version.original_filename}
                           {doc.current_version.file_size > 0 &&
                             ` · ${formatBytes(doc.current_version.file_size)}`}
@@ -193,18 +237,19 @@ export default async function SearchPage({
 
                     {/* Row 4: Tags */}
                     {doc.tags.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
+                      <div className="mt-2 flex flex-wrap gap-1.5">
                         {doc.tags.slice(0, 8).map((tag) => (
                           <span
                             key={tag}
-                            className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600"
+                            className="chip gap-1 bg-surface-2 text-[11px] text-muted ring-1 ring-line
+                                       transition-colors group-hover:bg-accent-soft group-hover:text-accent-ink group-hover:ring-accent-line"
                           >
                             <Tag className="size-2.5" />
                             {tag}
                           </span>
                         ))}
                         {doc.tags.length > 8 && (
-                          <span className="text-xs text-slate-400">
+                          <span className="chip text-[11px] text-faint">
                             +{doc.tags.length - 8} more
                           </span>
                         )}

@@ -1,14 +1,26 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, Download, FileText, History, MessageSquare, ShieldCheck } from 'lucide-react';
+import {
+  ArrowLeft,
+  CalendarClock,
+  Download,
+  FileText,
+  History,
+  MessageSquare,
+  ScrollText,
+  ShieldCheck,
+  Sparkles,
+  Tags,
+} from 'lucide-react';
 import { requireSession } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { SIGNED_URL_TTL, STORAGE_BUCKET, canReview } from '@/lib/constants';
 import { ProcessingBadge, StatusBadge } from '@/components/badges';
-import { formatBytes, formatDateTime } from '@/components/ui';
+import { Field, formatBytes, formatDateTime, stagger } from '@/components/ui';
 import { WorkflowActions } from '@/components/workflow-actions';
 import { CommentForm } from '@/components/comment-form';
 import { ProcessingStatus } from '@/components/processing-status';
+import { DocumentIntelligenceInteractive } from '@/components/document-intelligence-interactive';
 import type { AuditEntry, DocumentInsights, DocumentVersion, ReviewEntry } from '@/lib/types';
 
 export default async function DocumentDetailPage({
@@ -17,28 +29,23 @@ export default async function DocumentDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const { profile } = await requireSession();
   const supabase = await createClient();
 
-  const { data: doc } = await supabase
-    .from('documents')
-    .select(
-      `id, title, description, owner_id, workflow_status, current_version_id,
+  const [{ profile }, { data: doc }, { data: versions }, { data: comments }, { data: reviews }, { data: audit }] =
+    await Promise.all([
+      requireSession(),
+      supabase
+        .from('documents')
+        .select(
+          `id, title, description, owner_id, workflow_status, current_version_id,
        category_source, category_confidence, document_type, document_date, tags,
        system_metadata, created_at, updated_at,
        category:categories!documents_category_id_fkey (id, name),
        department:departments!documents_department_id_fkey (id, name),
        owner:profiles!documents_owner_id_fkey (id, full_name)`,
-    )
-    .eq('id', id)
-    .maybeSingle();
-
-  // RLS makes an unauthorized document indistinguishable from a missing one,
-  // which is what we want — existence is not leaked.
-  if (!doc) notFound();
-
-  const [{ data: versions }, { data: comments }, { data: reviews }, { data: audit }, { data: insights }] =
-    await Promise.all([
+        )
+        .eq('id', id)
+        .maybeSingle(),
       supabase
         .from('document_versions')
         .select(
@@ -71,95 +78,104 @@ export default async function DocumentDetailPage({
         .eq('document_id', id)
         .order('created_at', { ascending: false })
         .limit(50),
-      // Insights belong to a VERSION, not a document. Querying by document_id
-      // and taking the newest row would show v1's analysis as if it described
-      // the current v2 — i.e. AI output attributed to content it never saw.
-      doc.current_version_id
-        ? supabase
-            .from('document_insights')
-            .select(
-              'id, document_id, document_version_id, summary, key_points, entities, important_dates, model, generated_at',
-            )
-            .eq('document_version_id', doc.current_version_id)
-            .maybeSingle()
-        : Promise.resolve({ data: null }),
     ]);
+
+  if (!doc) notFound();
 
   const allVersions = (versions ?? []) as unknown as (DocumentVersion & {
     uploader: { id: string; full_name: string } | null;
   })[];
-  const current = allVersions.find((v) => v.id === doc.current_version_id) ?? allVersions[0];
+  const current = allVersions.find((v) => v.id === doc.current_version_id) ?? allVersions[0] ?? null;
 
-  // Short-lived signed URL — the bucket is private and never serves public URLs.
-  let fileUrl: string | null = null;
-  if (current) {
-    const { data: signed } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .createSignedUrl(current.storage_path, SIGNED_URL_TTL);
-    fileUrl = signed?.signedUrl ?? null;
-  }
+  const [{ data: insights }, signedUrl] = await Promise.all([
+    doc.current_version_id
+      ? supabase
+          .from('document_insights')
+          .select(
+            'id, document_id, document_version_id, summary, key_points, entities, important_dates, model, generated_at',
+          )
+          .eq('document_version_id', doc.current_version_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    current
+      ? supabase.storage
+          .from(STORAGE_BUCKET)
+          .createSignedUrl(current.storage_path, SIGNED_URL_TTL)
+          .then(({ data }) => data?.signedUrl ?? null)
+      : Promise.resolve(null),
+  ]);
+
+  const fileUrl: string | null = signedUrl;
 
   const isOwner = doc.owner_id === profile.id;
   const classification = (doc.system_metadata as Record<string, any>)?.classification;
   const insight = (insights ?? null) as DocumentInsights | null;
 
-  // Mirrors document_is_visible() in the database, which 0008 made the single
-  // predicate behind can_process_version(). Written out rather than hardcoded to
-  // `true`: reaching this line already implies visibility (RLS returned the row
-  // using the same rule), but stating the rule keeps the client honest if the
-  // policy ever changes, and keeps the button from promising something the
-  // database would then refuse.
   const canProcess = isOwner || (canReview(profile.role) && doc.workflow_status !== 'draft');
 
+  const folder =
+    (doc.category as any)?.name && (doc.department as any)?.name
+      ? `${(doc.department as any).name} / ${(doc.category as any).name}`
+      : null;
+
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-5xl space-y-7">
       <Link
         href="/workspace"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+        className="group inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted
+                   transition-colors hover:text-ink"
       >
-        <ArrowLeft className="size-4" />
-        Workspace
+        <ArrowLeft
+          className="size-3.5 transition-transform duration-300 group-hover:-translate-x-1"
+        />
+        Back to Workspace
       </Link>
 
-      {/* Header */}
-      <header className="mt-3 flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">{doc.title}</h1>
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+        <div className="min-w-0 animate-rise">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="chip bg-accent-soft text-xs font-bold text-accent-ink ring-1 ring-accent-line">
+              {folder ?? 'Unfiled'}
+            </span>
+            <span className="text-xs text-faint">·</span>
+            <span className="text-xs text-muted">Uploaded by {(doc.owner as any)?.full_name ?? 'Unknown'}</span>
+          </div>
+          <h1 className="display text-[2rem] font-bold leading-tight text-ink sm:text-[2.35rem]">
+            {doc.title}
+          </h1>
+          <div className="mt-3 flex flex-wrap items-center gap-2.5">
             <StatusBadge state={doc.workflow_status} />
             {current && <ProcessingBadge state={current.processing_status} />}
+            <span className="font-mono text-xs text-faint">
+              Updated {formatDateTime(doc.updated_at)}
+            </span>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            {(doc.department as any)?.name && (doc.category as any)?.name
-              ? `${(doc.department as any).name} / ${(doc.category as any).name}`
-              : 'Unfiled'}{' '}
-            · {(doc.owner as any)?.full_name ?? 'Unknown'} · updated {formatDateTime(doc.updated_at)}
-          </p>
         </div>
 
         {fileUrl && (
-          <a href={fileUrl} target="_blank" rel="noreferrer" className="btn-secondary">
-            <Download className="size-4" />
-            Download
+          <a
+            href={fileUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="btn-secondary group shrink-0 animate-rise shadow-e1 [animation-delay:80ms]"
+          >
+            <Download className="size-4 transition-transform duration-300 group-hover:translate-y-0.5" />
+            Download Source
           </a>
         )}
       </header>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="space-y-6">
-          {/* Metadata */}
-          <section className="card p-5">
-            <h2 className="font-medium">Metadata</h2>
-            <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+          {/* ── Metadata ──────────────────────────────────────────────────── */}
+          <Panel icon={Tags} title="Document Metadata">
+            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
               <Field label="Document type" value={doc.document_type} />
               <Field label="Document date" value={doc.document_date} />
               <Field
                 label="Folder"
-                value={
-                  (doc.category as any)?.name
-                    ? `${(doc.department as any)?.name} / ${(doc.category as any).name}`
-                    : null
-                }
+                value={folder}
                 badge={
                   doc.category_source === 'system'
                     ? 'System'
@@ -174,185 +190,106 @@ export default async function DocumentDetailPage({
             </dl>
 
             {classification?.method === 'keyword' && (
-              <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                <strong>Auto-filed</strong> by keyword match on{' '}
-                {classification.basis === 'title_and_filename'
-                  ? 'title and filename'
-                  : 'document text'}
-                {classification.matched_terms?.length
-                  ? `: ${classification.matched_terms.join(', ')}`
-                  : ''}
-                {doc.category_confidence != null &&
-                  ` · confidence ${Math.round(doc.category_confidence * 100)}%`}
-              </p>
-            )}
-          </section>
-
-          {/* Document intelligence — only real, persisted output is shown. */}
-          <section className="card p-5">
-            <h2 className="font-medium">Document intelligence</h2>
-
-            {current?.processing_status === 'completed' ? (
-              <>
-                <p className="mt-2 text-xs text-slate-500">
-                  {current.char_count.toLocaleString()} characters extracted
-                  {current.page_count ? ` from ${current.page_count} page(s)` : ''}
-                  {current.extraction_method
-                    ? ` · method: ${
-                        current.extraction_method === 'text'
-                          ? 'direct text layer'
-                          : current.extraction_method === 'ocr'
-                            ? 'OCR'
-                            : 'mixed (text + OCR)'
-                      }`
-                    : ''}
+              <div className="mt-5 rounded-xl border border-line bg-surface-2/60 px-4 py-3 text-xs leading-relaxed text-ink-2 shadow-xs">
+                <div className="flex items-center gap-1.5 font-semibold text-ink">
+                  <Sparkles className="size-3.5 text-accent" />
+                  Auto-filed by content taxonomy match:
+                </div>
+                <p className="mt-1 text-muted">
+                  Matched based on{' '}
+                  <strong className="text-ink">
+                    {classification.basis === 'title_and_filename'
+                      ? 'title & filename patterns'
+                      : 'extracted text layers'}
+                  </strong>
+                  {classification.matched_terms?.length ? (
+                    <>
+                      {' '}with tokens:{' '}
+                      {classification.matched_terms.map((t: string) => (
+                        <span
+                          key={t}
+                          className="mr-1 inline-block rounded-md bg-surface px-1.5 py-0.5 font-mono text-[11px]
+                                     text-accent-ink ring-1 ring-accent-line/50 shadow-2xs"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </>
+                  ) : null}
+                  {doc.category_confidence != null &&
+                    ` · Confidence: ${Math.round(doc.category_confidence * 100)}%`}
                 </p>
-
-                {current.char_count === 0 && (
-                  <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    No readable text was found in this file, even after OCR. The document is stored
-                    and searchable by title and metadata.
-                  </p>
-                )}
-
-                {insight ? (
-                  <div className="mt-4 space-y-4">
-                    {insight.summary && (
-                      <div>
-                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Summary
-                          <span className="ml-1.5 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-medium normal-case text-violet-700">
-                            AI
-                          </span>
-                        </h3>
-                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                          {insight.summary}
-                        </p>
-                      </div>
-                    )}
-
-                    {insight.key_points.length > 0 && (
-                      <div>
-                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Key points
-                        </h3>
-                        <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700">
-                          {insight.key_points.map((p, i) => (
-                            <li key={i}>{p}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {insight.important_dates.length > 0 && (
-                      <div>
-                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Important dates
-                        </h3>
-                        <ul className="mt-1 space-y-1 text-sm">
-                          {insight.important_dates.map((d, i) => (
-                            <li key={i} className="flex items-center gap-2">
-                              <span className="font-mono text-xs text-slate-500">{d.date}</span>
-                              <span className="text-slate-700">{d.label}</span>
-                              {d.is_deadline && (
-                                <span className="rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-700">
-                                  deadline
-                                </span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {insight.entities.length > 0 && (
-                      <div>
-                        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Entities
-                        </h3>
-                        <div className="mt-1 flex flex-wrap gap-1.5">
-                          {insight.entities.map((e, i) => (
-                            <span
-                              key={i}
-                              className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
-                              title={e.type}
-                            >
-                              {e.name}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {insight.model && (
-                      <p className="text-[11px] text-slate-400">
-                        Generated by {insight.model} on {formatDateTime(insight.generated_at)}. AI
-                        output is a suggestion and does not replace your own metadata.
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-sm text-slate-500">
-                    Text was extracted, but no AI analysis is stored for this version. This happens
-                    when no <code className="text-xs">ANTHROPIC_API_KEY</code> is configured, or the
-                    provider call failed. Nothing is shown in place of it.
-                  </p>
-                )}
-              </>
-            ) : current?.processing_status === 'failed' ? (
-              <p className="mt-2 text-sm text-red-700">
-                Processing failed: {current.processing_error ?? 'unknown error'}
-              </p>
-            ) : (
-              <p className="mt-2 text-sm text-slate-500">
-                This version has not been processed yet. Use the Processing panel to extract text and
-                analyze it.
-              </p>
+              </div>
             )}
-          </section>
+          </Panel>
 
-          {/* Preview */}
+          {/* ── Document intelligence ───────────────────────────────────────── */}
+          <Panel icon={Sparkles} title="AI Document Intelligence">
+            <DocumentIntelligenceInteractive current={current} insight={insight} />
+          </Panel>
+
+          {/* ── Preview ───────────────────────────────────────────────────── */}
           {fileUrl && current?.mime_type === 'application/pdf' && (
-            <section className="card overflow-hidden">
-              <h2 className="border-b border-slate-200 px-5 py-3 font-medium">Preview</h2>
-              <iframe src={fileUrl} title="Document preview" className="h-[600px] w-full" />
+            <section className="glass-card animate-rise overflow-hidden shadow-e2">
+              <div className="flex items-center justify-between border-b border-line px-5 py-3.5 bg-surface-2/40">
+                <h2 className="font-semibold text-ink">Document PDF Preview</h2>
+                <span className="chip font-mono text-xs text-faint">Inline Viewer</span>
+              </div>
+              <iframe src={fileUrl} title="Document preview" className="h-[620px] w-full border-none" />
             </section>
           )}
           {fileUrl && current?.mime_type.startsWith('image/') && (
-            <section className="card overflow-hidden">
-              <h2 className="border-b border-slate-200 px-5 py-3 font-medium">Preview</h2>
+            <section className="glass-card animate-rise overflow-hidden shadow-e2">
+              <div className="flex items-center justify-between border-b border-line px-5 py-3.5 bg-surface-2/40">
+                <h2 className="font-semibold text-ink">Image Preview</h2>
+                <span className="chip font-mono text-xs text-faint">Original Source</span>
+              </div>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={fileUrl} alt={doc.title} className="max-h-[600px] w-full object-contain" />
+              <img
+                src={fileUrl}
+                alt={doc.title}
+                className="max-h-[600px] w-full bg-surface-2/80 object-contain p-4"
+              />
             </section>
           )}
 
-          {/* Comments */}
-          <section className="card p-5">
-            <h2 className="flex items-center gap-2 font-medium">
-              <MessageSquare className="size-4 text-slate-400" />
-              Comments
-            </h2>
-            <ul className="mt-3 space-y-3">
+          {/* ── Comments ──────────────────────────────────────────────────── */}
+          <Panel icon={MessageSquare} title="Review Comments & Discussion" count={(comments ?? []).length}>
+            <ul className="space-y-3.5">
               {(comments ?? []).length === 0 && (
-                <li className="text-sm text-slate-500">No comments yet.</li>
+                <li className="text-sm text-faint">No discussion notes on this document yet.</li>
               )}
-              {(comments ?? []).map((c: any) => (
-                <li key={c.id} className="rounded-lg bg-slate-50 px-3 py-2">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-sm font-medium">{c.author?.full_name ?? 'Unknown'}</span>
-                    <span className="text-xs text-slate-500">{formatDateTime(c.created_at)}</span>
+              {(comments ?? []).map((c: any, i: number) => (
+                <li key={c.id} className="rise-in flex gap-3" style={stagger(i)}>
+                  <span
+                    className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl
+                               bg-surface-2 font-mono text-xs font-bold text-accent-ink ring-1 ring-line shadow-xs"
+                  >
+                    {initials(c.author?.full_name)}
+                  </span>
+                  <div className="min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-line bg-surface-2/70 px-4 py-3 shadow-xs">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <span className="text-sm font-semibold text-ink">
+                        {c.author?.full_name ?? 'Unknown'}
+                      </span>
+                      <span className="font-mono text-[11px] text-faint">
+                        {formatDateTime(c.created_at)}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-ink-2">
+                      {c.body}
+                    </p>
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{c.body}</p>
                 </li>
               ))}
             </ul>
-            <div className="mt-4">
+            <div className="mt-5 pt-3 border-t border-line">
               <CommentForm documentId={doc.id} />
             </div>
-          </section>
+          </Panel>
         </div>
 
-        {/* Sidebar */}
+        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
         <aside className="space-y-6">
           {current && (
             <ProcessingStatus
@@ -374,117 +311,141 @@ export default async function DocumentDetailPage({
           />
 
           {/* Version history */}
-          <section className="card p-5">
-            <h2 className="flex items-center gap-2 font-medium">
-              <History className="size-4 text-slate-400" />
-              Versions
-            </h2>
-            <ol className="mt-3 space-y-3">
+          <Panel icon={History} title="Version History" count={allVersions.length}>
+            <ol className="space-y-3.5">
               {allVersions.map((v) => (
                 <li key={v.id} className="text-sm">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">v{v.version_number}</span>
+                    <span className="font-mono text-xs font-bold text-ink">
+                      v{v.version_number}
+                    </span>
                     {v.id === doc.current_version_id && (
-                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">
-                        current
+                      <span className="chip bg-ok-soft font-semibold text-[10px] text-ok ring-1 ring-ok-line">
+                        Current
                       </span>
                     )}
                   </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
-                    <div className="truncate">{v.original_filename}</div>
+                  <div className="mt-1 space-y-0.5 text-xs leading-relaxed text-muted">
+                    <div className="truncate font-mono font-medium text-ink-2">{v.original_filename}</div>
                     <div>
                       {formatBytes(v.file_size)} · {v.uploader?.full_name ?? 'Unknown'} ·{' '}
                       {formatDateTime(v.created_at)}
                     </div>
-                    {v.change_note && <div className="mt-0.5 italic">“{v.change_note}”</div>}
+                    {v.change_note && (
+                      <div className="mt-1 rounded-md border-l-2 border-accent bg-surface-2 px-2 py-1 italic text-ink-2">
+                        {v.change_note}
+                      </div>
+                    )}
                   </div>
                 </li>
               ))}
-              {allVersions.length === 0 && <li className="text-sm text-slate-500">No versions.</li>}
             </ol>
-          </section>
+          </Panel>
 
           {/* Review decisions */}
           {(reviews ?? []).length > 0 && (
-            <section className="card p-5">
-              <h2 className="flex items-center gap-2 font-medium">
-                <ShieldCheck className="size-4 text-slate-400" />
-                Review history
-              </h2>
-              <ol className="mt-3 space-y-3">
+            <Panel icon={ShieldCheck} title="Review Audit Log">
+              <ol className="space-y-3.5">
                 {((reviews ?? []) as unknown as (ReviewEntry & {
                   reviewer: { full_name: string } | null;
                 })[]).map((r) => (
                   <li key={r.id} className="text-sm">
-                    <div className="font-medium">{r.action.replace(/_/g, ' ')}</div>
-                    <div className="text-xs text-slate-500">
+                    <div className="font-semibold capitalize text-ink">
+                      {r.action.replace(/_/g, ' ')}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
                       {r.reviewer?.full_name ?? 'Unknown'} · {formatDateTime(r.created_at)}
                     </div>
                     {r.comment && (
-                      <p className="mt-1 rounded bg-slate-50 px-2 py-1 text-xs text-slate-700">
+                      <p className="mt-1.5 rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs leading-relaxed text-ink-2">
                         {r.comment}
                       </p>
                     )}
                   </li>
                 ))}
               </ol>
-            </section>
+            </Panel>
           )}
 
-          {/* Audit trail — real rows, written by the database */}
-          <section className="card p-5">
-            <h2 className="flex items-center gap-2 font-medium">
-              <FileText className="size-4 text-slate-400" />
-              Audit history
-            </h2>
-            <ol className="mt-3 space-y-2">
+          {/* Audit trail */}
+          <Panel icon={ScrollText} title="Security & Event Trail">
+            <ol className="relative space-y-3.5 border-l border-line pl-4">
               {((audit ?? []) as unknown as AuditEntry[]).map((a) => (
-                <li key={a.id} className="text-xs">
-                  <span className="font-medium text-slate-700">{a.action.replace(/_/g, ' ')}</span>
+                <li key={a.id} className="relative text-xs">
+                  <span
+                    aria-hidden
+                    className="absolute -left-[1.3125rem] top-1.5 size-2 rounded-full
+                               bg-accent ring-2 ring-surface shadow-xs"
+                  />
+                  <span className="font-semibold capitalize text-ink">
+                    {a.action.replace(/_/g, ' ')}
+                  </span>
                   {a.from_state && a.to_state && (
-                    <span className="text-slate-500">
+                    <span className="text-muted font-mono text-[11px]">
                       {' '}
                       · {a.from_state} → {a.to_state}
                     </span>
                   )}
-                  <div className="text-slate-500">
-                    {(a as any).actor?.full_name ?? 'System'} · {formatDateTime(a.created_at)}
+                  <div className="mt-0.5 text-muted">
+                    {(a as any).actor?.full_name ?? 'System'} ·{' '}
+                    <span className="font-mono text-[10px]">{formatDateTime(a.created_at)}</span>
                   </div>
                 </li>
               ))}
-              {(audit ?? []).length === 0 && (
-                <li className="text-sm text-slate-500">No audit events.</li>
-              )}
+              {(audit ?? []).length === 0 && <li className="text-sm text-faint">No audit events recorded.</li>}
             </ol>
-          </section>
+          </Panel>
         </aside>
       </div>
     </div>
   );
 }
 
-function Field({
-  label,
-  value,
-  badge,
+function Panel({
+  icon: Icon,
+  title,
+  count,
+  children,
 }: {
-  label: string;
-  value: string | null | undefined;
-  badge?: string;
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  count?: number;
+  children: React.ReactNode;
 }) {
   return (
-    <div>
-      <dt className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
-        {label}
-        {badge && value && (
-          <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium normal-case text-slate-600">
-            {badge}
+    <section className="glass-card animate-rise p-5 sm:p-6 shadow-e1">
+      <h2 className="mb-4 flex items-center justify-between font-semibold text-ink">
+        <span className="flex items-center gap-2.5">
+          <Icon className="size-4 text-accent-ink" />
+          {title}
+        </span>
+        {count !== undefined && count > 0 && (
+          <span className="chip bg-surface-2 font-mono text-xs font-bold tabular-nums text-muted ring-1 ring-line">
+            {count}
           </span>
         )}
-      </dt>
-      <dd className="mt-0.5 text-sm text-slate-900">
-        {value || <span className="text-slate-400">Not set</span>}
-      </dd>
-    </div>
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function SubHead({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="flex items-center text-[10px] font-bold uppercase tracking-wider text-faint">
+      {children}
+    </h3>
+  );
+}
+
+function initials(name: string | undefined): string {
+  if (!name) return '?';
+  return (
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((p) => p[0]?.toUpperCase())
+      .join('') || '?'
   );
 }
