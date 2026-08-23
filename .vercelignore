@@ -1,6 +1,0 @@
-# Ignore everything not needed for the Next.js build
-supabase/
-tests/
-docs/
-*.md
-!README.md
