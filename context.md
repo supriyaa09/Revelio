@@ -146,20 +146,20 @@ Throwaway `scripts/tmp-probe.mts` deleted.
 
 ## Next unfinished task (start here in a new session)
 
-**Phase 2 is COMPLETE and committed** ("Replace cloud AI with on-device
-analysis engine", on `sohail-desktop` directly after `bfacbce`). No open tasks.
-Possible next work (not yet requested): push `sohail-desktop`, user smoke-test
-of the new installer (existing library should heal from NO_API_KEY → ok on
-first launch), or the deferred Ollama enhancement (explicitly out of phase-2
-scope).
+**Phase 2 is COMPLETE, committed and PUSHED** ("Replace cloud AI with
+on-device analysis engine", on `sohail-desktop` directly after `bfacbce`).
+No open tasks. Possible next work (not yet requested): user smoke-test of the
+new installer (existing library should heal from NO_API_KEY → ok on first
+launch), or the deferred Ollama enhancement (explicitly out of phase-2 scope).
 
 ## Key facts / gotchas
 
 - Repo root = `E:\sohail\code\Build-a-thon\Revelio`; tool paths prefix `Revelio/`.
   Shell `cd Revelio` lands in the repo root (git bash on Windows).
-- Git: branch `sohail-desktop`; phase 1 = `c3bba1b`; bfacbce was a
-  stale-context.md commit made mid-phase-2; phase 2 = the commit directly on
-  top of bfacbce ("Replace cloud AI with on-device analysis engine").
+- Git: branch `sohail-desktop` (pushed to origin); phase 1 = `c3bba1b`;
+  bfacbce was a stale-context.md commit made mid-phase-2; phase 2 = the commit
+  directly on top of bfacbce ("Replace cloud AI with on-device analysis
+  engine").
 - NEVER read image files (icons, screenshots) with the model — text-only model.
   Verify images programmatically (PNG header bytes, file size) if needed.
 - **Always run terminal commands with `timeout_ms`** — a hang once cost a session;
