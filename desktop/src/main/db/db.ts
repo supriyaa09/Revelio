@@ -495,3 +495,68 @@ export function listExistingCategories(limit = 60): string[] {
     .all(limit) as { category: string }[];
   return rows.map((r) => r.category);
 }
+
+/**
+ * Existing categories with representative keywords, used by the local analyzer
+ * to keep category naming stable (reuse a category when a document's keywords
+ * overlap its members' keywords). Shape matches local/categorize's
+ * CategoryProfile; kept structurally typed so the DB layer stays engine-free.
+ */
+export function categoryKeywordProfiles(
+  maxCategories = 40,
+  keywordsPerCategory = 8,
+): { name: string; keywords: string[]; count: number }[] {
+  const counts = getDb()
+    .prepare(
+      `SELECT category, COUNT(*) AS n FROM files
+       WHERE category IS NOT NULL AND status != 'missing'
+       GROUP BY category ORDER BY n DESC LIMIT ?`,
+    )
+    .all(maxCategories) as { category: string; n: number }[];
+
+  if (counts.length === 0) return [];
+
+  // Expand each file's stored keyword JSON array and tally term frequency per
+  // category. json_each ships with better-sqlite3's SQLite build.
+  const kwRows = getDb()
+    .prepare(
+      `SELECT f.category AS category, j.value AS kw, COUNT(*) AS n
+       FROM files f, json_each(f.keywords) AS j
+       WHERE f.category IS NOT NULL AND f.status != 'missing'
+         AND f.keywords IS NOT NULL AND json_valid(f.keywords)
+       GROUP BY f.category, j.value`,
+    )
+    .all() as { category: string; kw: string; n: number }[];
+
+  const byCategory = new Map<string, { kw: string; n: number }[]>();
+  for (const r of kwRows) {
+    if (typeof r.kw !== 'string' || r.kw.length === 0) continue;
+    const list = byCategory.get(r.category) ?? [];
+    list.push({ kw: r.kw.toLowerCase(), n: r.n });
+    byCategory.set(r.category, list);
+  }
+
+  return counts.map((c) => {
+    const top = (byCategory.get(c.category) ?? [])
+      .sort((a, b) => b.n - a.n)
+      .slice(0, keywordsPerCategory)
+      .map((t) => t.kw);
+    return { name: c.category, keywords: top, count: c.n };
+  });
+}
+
+/**
+ * Files skipped in the API-key era (`ai_error = 'NO_API_KEY'`) that are
+ * otherwise indexed. Re-queued for local analysis on startup so libraries
+ * built before phase 2 heal automatically.
+ */
+export function listKeylessSkippedIds(limit = 5000): number[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT id FROM files
+       WHERE ai_error = 'NO_API_KEY' AND status = 'ready'
+       ORDER BY id LIMIT ?`,
+    )
+    .all(limit) as { id: number }[];
+  return rows.map((r) => r.id);
+}

@@ -15,6 +15,7 @@
     "dist:dir": "electron-vite build && electron-builder --dir",
     "typecheck": "tsc --noEmit -p tsconfig.node.json --composite false && tsc --noEmit -p tsconfig.web.json --composite false",
     "test:search": "node --experimental-strip-types scripts/test-search.mts",
+    "test:analyze": "node --experimental-strip-types scripts/test-analyze.mts",
     "postinstall": "electron-rebuild -f -w better-sqlite3 || echo electron-rebuild failed; better-sqlite3 may still have a usable prebuild"
   },
   "build": {
@@ -53,7 +54,6 @@
     }
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.120.0",
     "@napi-rs/canvas": "^1.0.7",
     "better-sqlite3": "^12.2.0",
     "chokidar": "^4.0.3",

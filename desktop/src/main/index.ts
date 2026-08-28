@@ -98,8 +98,10 @@ app.whenReady().then(() => {
   registerIpc({ indexer, watcher, getWindow: () => mainWindow, emit });
   createWindow();
 
-  // Pick up anything left pending from a previous run, then start watching.
+  // Pick up anything left pending from a previous run, re-analyze locally
+  // whatever was skipped for lack of an API key before phase 2, then watch.
   indexer.resumePending();
+  indexer.requeueKeylessAnalyses();
   void watcher.sync(listFolders(), getSettings().excludePatterns);
 
   app.on('activate', () => {

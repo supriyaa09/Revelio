@@ -1,7 +1,7 @@
 /**
- * Categories: the AI-suggested shelves of the library, with counts.
- * No hardcoded taxonomy — everything here was coined by the analyzer from the
- * user's own documents. Clicking one opens a filtered search.
+ * Categories: the analyzer-suggested shelves of the library, with counts.
+ * No hardcoded taxonomy — everything here was coined by the local analyzer
+ * from the user's own documents. Clicking one opens a filtered search.
  */
 
 import { useEffect, useState } from 'react';
@@ -53,7 +53,7 @@ export function Categories({
       <header className="mb-6">
         <h1 className="text-xl font-semibold tracking-tight text-ink">Categories</h1>
         <p className="mt-0.5 text-[13px] text-muted">
-          Auto-suggested by AI from your documents — no fixed taxonomy.
+          Suggested automatically from your documents — no fixed taxonomy.
         </p>
       </header>
 
@@ -82,7 +82,7 @@ export function Categories({
 
       {stats.categories.length > 0 && (
         <Card className="mt-6 px-4 py-3 text-[12px] leading-5 text-muted">
-          Category names are suggested by the AI during analysis and stabilise over time: the
+          Category names are suggested during on-device analysis and stabilise over time: the
           analyzer sees the existing list and reuses names where documents clearly fit.
         </Card>
       )}

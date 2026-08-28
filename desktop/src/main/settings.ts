@@ -1,11 +1,12 @@
 /**
  * Settings store.
  *
- * A small JSON file in the OS user-data directory. The renderer edits these via
- * IPC; the main process reads them when configuring the indexer and the AI
- * layer. An empty apiKey/model means "fall back to environment variables", so
- * a user who launches the app from a terminal with ANTHROPIC_API_KEY set never
- * has to retype it.
+ * A small JSON file in the OS user-data directory. The renderer edits these
+ * via IPC; the main process reads them when configuring the indexer.
+ *
+ * Analysis runs entirely on-device since phase 2, so there is no provider,
+ * API key or model to configure. Settings files written during the key era
+ * are silently stripped of that material on load (see `load`).
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -18,12 +19,12 @@ let cache: AppSettings | null = null;
 export const DEFAULT_SETTINGS: AppSettings = {
   aiEnabled: true,
   ocrEnabled: true,
-  provider: 'anthropic',
-  apiKey: '',
-  model: '',
   maxFileSizeMB: 50,
   excludePatterns: ['node_modules', '.git', '.next', 'dist', 'out', '.cache', '__pycache__', 'venv'],
 };
+
+/** Fields retired in phase 2; removed from stored settings on load. */
+const RETIRED_KEYS = ['provider', 'apiKey', 'model'] as const;
 
 export function initSettings(userDataDir: string): void {
   settingsPath = join(userDataDir, 'settings.json');
@@ -34,8 +35,18 @@ function load(): AppSettings {
   if (!settingsPath) return { ...DEFAULT_SETTINGS };
   try {
     const raw = readFileSync(settingsPath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<AppSettings>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const parsed = JSON.parse(raw) as Partial<AppSettings> & Record<string, unknown>;
+
+    // Privacy: settings.json from the key era may still hold an API key.
+    // Drop the retired fields and rewrite the file without them.
+    const hadRetired = RETIRED_KEYS.some((k) => k in parsed);
+    for (const k of RETIRED_KEYS) delete parsed[k];
+
+    const merged: AppSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    if (hadRetired) {
+      writeFileSync(settingsPath, JSON.stringify(merged, null, 2), 'utf8');
+    }
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -54,30 +65,4 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     writeFileSync(settingsPath, JSON.stringify(next, null, 2), 'utf8');
   }
   return { ...next };
-}
-
-/**
- * Builds the environment overlay the provider resolver consumes. Settings win
- * over the inherited process environment; unset settings defer to it. This is
- * what lets the in-app key field and ANTHROPIC_API_KEY coexist.
- */
-export function buildAiEnv(settings: AppSettings = getSettings()): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env };
-
-  env.REVELIO_AI_PROVIDER = settings.provider;
-
-  if (settings.apiKey.trim()) {
-    if (settings.provider === 'agentrouter') {
-      env.REVELIO_AGENTROUTER_API_KEY = settings.apiKey.trim();
-    } else {
-      env.ANTHROPIC_API_KEY = settings.apiKey.trim();
-    }
-  }
-
-  if (settings.model.trim()) {
-    env.ANTHROPIC_MODEL = settings.model.trim();
-    env.REVELIO_AGENTROUTER_MODEL = settings.model.trim();
-  }
-
-  return env;
 }

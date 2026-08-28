@@ -227,7 +227,7 @@ exact-phrase bonus applied post-query.
 | Folder watch | chokidar, debounced, per connected root |
 | File dialogs | `dialog.showOpenDialog` (directory selection) |
 | Open/reveal | `shell.openPath`, `shell.showItemInFolder` |
-| AI keys | Settings UI + env fallback (`ANTHROPIC_API_KEY`, `REVELIO_AI_PROVIDER`, `REVELIO_AGENTROUTER_*`); stored in `userData/settings.json` — local app, user's own key, never shipped |
+| AI analysis | **Keyless since phase 2:** a built-in, deterministic, on-device engine (`desktop/src/main/processing/local/`, model marker `revelio-local`) produces summaries, keywords, categories, entities and dates. No API keys, no settings for them, no network calls — the earlier Anthropic/AgentRouter wiring was removed, and libraries skipped in the key era heal automatically on startup |
 | OCR offline | `eng.traineddata` bundled in `resources/`, no CDN needed |
 | Security | `contextIsolation: true`, `nodeIntegration: false`, preload-only bridge; renderer never touches fs/DB/keys directly |
 | Packaging | electron-builder later (out of MVP scope; dev build for demo) |

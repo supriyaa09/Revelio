@@ -5,14 +5,14 @@
  *
  *   read bytes → SHA-256 → extract text (PDF text layer / DOCX / plain text,
  *   OCR fallback for scans and images) → chunk → write files+chunks+FTS
- *   (searchable immediately) → optional AI analysis (summary, keywords,
- *   entities, dates, category).
+ *   (searchable immediately) → local analysis (summary, keywords, entities,
+ *   dates, category) — computed on-device, no API key.
  *
  * Contracts carried over from the web pipeline:
  *  - A processing failure never destroys anything: the row is marked `failed`
  *    with a reason and can be retried; the user's file is untouched.
  *  - OCR is a fallback, never the default path.
- *  - AI is an enhancement: a missing key, a refusal or a bad response degrades
+ *  - Analysis is an enhancement: too little text or an engine error degrades
  *    to `ai_status: skipped/failed` — the extracted text stays searchable.
  *  - Indexing is idempotent per content hash, and a moved/renamed file updates
  *    its locator instead of creating a duplicate row.
@@ -32,8 +32,8 @@ import {
 import { MAX_OCR_PAGES, MIN_OCR_CONFIDENCE, ocrImage, ocrImages } from '../processing/ocr';
 import { chunkPages } from '../processing/chunk';
 import { analyseDocument } from '../processing/analyze';
-import { resolveProvider } from '../processing/providers';
 import {
+  categoryKeywordProfiles,
   deleteFileRow,
   findFileByHash,
   findFileByPath,
@@ -41,8 +41,8 @@ import {
   getDb,
   getFile,
   getFolder,
-  listExistingCategories,
   listFilePathsUnderFolder,
+  listKeylessSkippedIds,
   listPendingFileIds,
   markFileMissing,
   markFolderIndexed,
@@ -53,7 +53,7 @@ import {
   setFileStatus,
   upsertDiscoveredFile,
 } from '../db/db';
-import { getSettings, buildAiEnv } from '../settings';
+import { getSettings } from '../settings';
 import { walkFolder, type WalkedFile } from './walk';
 import { ProcessingQueue } from './queue';
 import type { FileDetails, FileRecord, MainEvent } from '@shared/types';
@@ -89,6 +89,20 @@ export class Indexer {
     for (const id of listPendingFileIds()) {
       const row = getFile(id);
       if (row) this.schedule(row.id, row.filename);
+    }
+  }
+
+  /**
+   * Heal libraries indexed during the API-key era: files skipped with
+   * NO_API_KEY get their analysis re-run locally. Called once at startup;
+   * analysis is milliseconds per file, so draining even a large library is
+   * cheap.
+   */
+  requeueKeylessAnalyses(): void {
+    for (const id of listKeylessSkippedIds()) {
+      const row = getFile(id);
+      if (!row) continue;
+      this.queue.enqueue(id, row.filename, () => this.runAnalysis(id));
     }
   }
 
@@ -376,21 +390,13 @@ export class Indexer {
       return;
     }
 
-    // Cheap pre-check so a missing key is reported as skipped, not failed.
-    const config = resolveProvider(buildAiEnv(settings));
-    if (!config.apiKey) {
-      saveAnalysis({ id, ai_status: 'skipped', ai_error: 'NO_API_KEY' });
-      return;
-    }
-
     saveAnalysis({ id, ai_status: 'pending' });
 
     const outcome = await analyseDocument({
       text: body,
       title: row.title ?? row.filename,
       filename: row.filename,
-      existingCategories: listExistingCategories(),
-      env: buildAiEnv(settings),
+      existingCategories: categoryKeywordProfiles(),
     });
 
     if (outcome.ok && outcome.analysis) {
@@ -406,7 +412,7 @@ export class Indexer {
         category: a.category,
         doc_date: a.document_date,
       });
-    } else if (outcome.reason === 'NO_API_KEY' || outcome.reason === 'NO_TEXT') {
+    } else if (outcome.reason === 'NO_TEXT') {
       saveAnalysis({ id, ai_status: 'skipped', ai_error: outcome.reason });
     } else {
       saveAnalysis({

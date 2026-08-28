@@ -23,9 +23,6 @@ export type AiStatus = 'none' | 'pending' | 'ok' | 'skipped' | 'failed';
 /** How the text layer was obtained. */
 export type ExtractionMethod = 'text' | 'ocr' | 'mixed';
 
-/** AI provider selection, mirrored from the web pipeline. */
-export type AiProviderName = 'anthropic' | 'agentrouter';
-
 // ── Records ──────────────────────────────────────────────────────────────────
 
 export interface EntityRef {
@@ -184,11 +181,6 @@ export interface Stats {
 export interface AppSettings {
   aiEnabled: boolean;
   ocrEnabled: boolean;
-  provider: AiProviderName;
-  /** Empty string means "fall back to environment variables". */
-  apiKey: string;
-  /** Empty string means "provider default model". */
-  model: string;
   maxFileSizeMB: number;
   excludePatterns: string[];
 }

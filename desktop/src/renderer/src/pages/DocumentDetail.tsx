@@ -266,7 +266,13 @@ export function DocumentDetail({
             {d.content_hash && <MetaRow label="SHA-256" value={d.content_hash.slice(0, 16) + '…'} mono />}
           </Card>
 
-          <SectionTitle right={d.ai_model ? <Badge>{d.ai_model}</Badge> : undefined}>
+          <SectionTitle
+            right={
+              d.ai_model ? (
+                <Badge>{d.ai_model === 'revelio-local' ? 'analyzed locally' : d.ai_model}</Badge>
+              ) : undefined
+            }
+          >
             <span className="mt-6 inline-block">AI analysis</span>
           </SectionTitle>
           <Card className="divide-y divide-line text-[12px]">
@@ -290,8 +296,11 @@ export function DocumentDetail({
             )}
             {d.ai_status !== 'ok' && d.ai_status !== 'pending' && (
               <div className="px-4 py-2.5 text-[11px] leading-4 text-faint">
-                Add an API key in Settings to unlock summaries, keywords, and auto-categorization.
-                Search works fully without it.
+                {d.ai_status === 'skipped' && d.ai_error === 'NO_TEXT'
+                  ? 'Not enough extractable text in this file to analyze.'
+                  : d.ai_status === 'skipped' && d.ai_error === 'AI_DISABLED'
+                    ? 'Analysis is turned off — enable it in Settings.'
+                    : 'Summaries, keywords, and auto-categorization are generated on this machine when the file is indexed. Use Re-analyze to run it now.'}
               </div>
             )}
           </Card>
