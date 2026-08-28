@@ -2,192 +2,132 @@
 
 > **Purpose:** persistent memory across chat sessions. If a thread crashes or context
 > runs out, read THIS file first, then continue from "Next unfinished task".
-> **Rule:** update this file after every completed sub-task.
+> **Rule:** update this file after every completed step (tick the checkbox, add a
+> progress-log entry, move the "Next unfinished task" pointer).
 
-Last updated: 2026-08-28 (session 4 — step 12 packaging DONE; installer built; only manual smoke test + commit remain)
+Last updated: 2026-08-28 (phase 2 kickoff — plan written, work starting at S1)
 
 ---
 
-## The mission
+## History (phase 1, compressed)
 
-Turn Revelio from a Next.js + Supabase institutional document system into a
-**desktop app** (Electron + electron-vite + React + SQLite FTS5) that indexes and
-AI-searches the user's local files. Plan: `docs/desktop-plan.md`. Branch: `sohail-desktop`.
-The web app in `frontend/` stays untouched. All new code lives in `desktop/`.
+Sessions 1–4 built the entire desktop app in `desktop/` (Electron + electron-vite +
+React 19 + Tailwind v4 + better-sqlite3 FTS5): db/schema, indexer, watcher, search
+parser/query, IPC/preload, 6 UI pages, App shell, 65 parser/query tests, error/empty
+states, keyboard nav, electron-builder packaging (NSIS installer verified on Windows).
 
-## Roadmap status (from docs/desktop-plan.md §6)
+**Committed** as `c3bba1b` on branch `sohail-desktop` ("Add Revelio desktop app
+(Electron + SQLite FTS5)", 52 files). Root `.gitignore` gained `!desktop/build/`
+so the packaging icon stays tracked. User smoke-tested: folder connect + search work.
 
-| Step | Scope | Status |
-| --- | --- | --- |
-| 1 | Scaffold desktop/ (electron-vite, TS, Tailwind v4, React 19) | ✅ done |
-| 2 | SQLite schema + db module + settings store | ✅ done |
-| 3 | Port processing pipeline (extract/ocr/chunk/providers) | ✅ done |
-| 4 | Adapt AI analysis to free-form categories | ✅ done |
-| 5 | Indexer: walk → hash → extract → chunk → insert, queue, progress | ✅ done |
-| 6 | Watcher (chokidar) | ✅ done |
-| 7 | Search parser + FTS5 query builder + bm25 | ✅ done |
-| 8 | IPC bridge + preload | ✅ done |
-| 9 | UI pages: Dashboard, Search, DocumentDetail, Categories, Folders, Settings | ✅ done |
-| 9b | **App.tsx shell (sidebar + routing)** | ✅ done THIS session |
-| 10 | Parser/query tests (`scripts/test-search.mts`) | ✅ done THIS session (65 tests) |
-| 11 | Polish: empty states, error states, keyboard nav | ✅ done |
-| 12 | Packaging (electron-builder) | ✅ done THIS session |
+## Phase 2 mission (CURRENT)
 
-## What session 1 did (recovered from repo state; branch untracked, nothing committed yet)
+**Goal: zero API keys. 100% on-device document intelligence.**
 
-- Built the entire `desktop/` tree: main process (db, indexing, processing, search,
-  settings, ipc), preload bridge, shared types, and all 6 renderer pages.
-- Last acts of session 1: fixed DocumentDetail back-navigation to use the `from`
-  view prop; wrote Categories, Folders, Settings pages. Crashed before writing App.tsx.
+The desktop app currently sends document text to Anthropic / AgentRouter for
+analysis (summary, keywords, category, entities, dates). That requires an API key
+and sends private files to a third party. Phase 2 replaces the model call with a
+**built-in, deterministic, offline analysis engine** written in pure TypeScript.
 
-## What session 2 (this one) did, in order
+Definition of done:
+- No API-key field anywhere (settings UI, settings store, env files, code).
+- No network call in the analysis path; no `@anthropic-ai/sdk` dependency.
+- Every document with extractable text gets `ai_status: 'ok'` with local insights.
+- Libraries indexed during the key era are re-analyzed locally automatically.
+- typecheck + all tests + build + packaging all green.
+- Web app in `frontend/` stays UNTOUCHED (it keeps its own Anthropic integration).
 
-1. Inspected repo, found `desktop/src/renderer/src/App.tsx` missing (`main.tsx`
-   imports it → app couldn't build). Also `desktop/scripts/` empty.
-2. **Created `desktop/src/renderer/src/App.tsx`** — shell with:
-   - state-based routing (`View` from `lib/nav.ts`), renders Sidebar + active page
-   - subscribes `window.api.onEvent`: `index:progress` → progress state,
-     `index:finished` → clear progress + bump dataVersion, `files:changed` → bump
-   - `dataVersion` counter passed to Dashboard/Categories/Folders for refetch
-   - dark mode: `.dark` class on `<html>`, persisted in localStorage key `revelio-dark`
-   - ⌘K/Ctrl+K → navigate to search + focus input (preserves in-progress query)
-   - SearchPage keyed by `view.query ?? ''` so navigating with a new query remounts
-3. `npm install` in `desktop/` — succeeded; electron-rebuild rebuilt better-sqlite3
-   for Electron ABI; verified `electron.exe` + `better_sqlite3.node` present.
-   better-sqlite3 ALSO still loads in plain Node v22.20 (needed for tests).
-4. Fixed 5 pre-existing typecheck errors (main process):
-   - `db/db.ts`: exported `FileRow` interface; widened `saveAnalysis` ai_status
-     param to include `'pending'` (indexer marks pending before AI call)
-   - `search/query.ts`: `ResultRow` now `extends FileRow` (+ score/snip/body)
-     instead of an index-signature bag → `mapFileRow(row)` typechecks
-   - `processing/analyze.ts` + `processing/providers.ts`: replaced
-     `typeof window !== 'undefined'` guard (TS2304 under Node types) with
-     `'window' in globalThis`; updated providers.ts message to Electron terminology
-5. ✅ `npm run typecheck` — clean (both tsconfig.node.json and tsconfig.web.json)
-6. ✅ `npm run build` (electron-vite build) — succeeds: out/main/index.js 68.6 kB,
-   out/preload/index.mjs 1.4 kB, out/renderer bundle 633 kB + 22 kB css
-7. Prep for tests: added explicit `.ts` extensions to runtime relative imports so
-   plain Node (`node --experimental-strip-types`) can load the modules:
-   - `search/query.ts`: `../db/db.ts`, `./parse.ts`, `../indexing/walk.ts`
-   - `db/db.ts`: `./schema.ts`
-   - Added `"allowImportingTsExtensions": true` to `desktop/tsconfig.node.json`
-     (required by tsc for `.ts` extension imports; typecheck passes `--noEmit`)
-8. **Wrote `desktop/scripts/test-search.mts`** — 65 tests, 14 sections: basic
-   parsing, type:/category:/in:/modified:/after:/before:, #tags, phrases,
-   combined pitch queries, isValidIsoDate, resolveModified, splitTerms,
-   describeFilters, buildFtsMatch. Same harness as frontend (node:assert/strict).
-9. **Fixed real parser bug the tests exposed** (`search/parse.ts`): stage-1
-   phrase extraction was swallowing quoted filter values (`category:"Research
-   Papers"` → phrase 'Research Papers', filter lost). This broke the UI's own
-   generated queries (Categories page, Dashboard chips, Search facets all emit
-   `category:"Name"`). Fix: phrase regex now uses negative lookbehind
-   `(?<!\b(?:type|category|in):)` to skip quotes glued to filter prefixes, and
-   `""` empty-quote pairs are stripped as noise (`[^"]*` instead of `[^"]+`).
-10. ✅ `npm run test:search` → 65 passed, 0 failed
-11. ✅ `npm run typecheck` clean again; ✅ `npm run build` clean again
-12. Editor-diagnostic cleanup: added `"noEmit": true` to `tsconfig.node.json`
-    (satisfies the allowImportingTsExtensions requirement in the editor too;
-    CLI typecheck still passes because it overrides `--composite false`).
-    NOTE: two editor diagnostics remain that are FALSE POSITIVES (verified):
-    - `desktop/src/renderer/src/main.tsx` "Cannot find module './App'" — stale
-      editor TS-server cache / solution-style root tsconfig confusion; App.tsx
-      exists, CLI tsc passes, and the production build bundles it fine.
-    - `frontend/scripts/test-search.mts` node-types errors — pre-existing web-app
-      file, untouched by us, not our problem.
+## Design: built-in local analysis engine
 
-## What session 3 did, in order
+Keep the existing `AiAnalysis` contract (document_type, category, keywords, summary,
+key_points, entities, important_dates, document_date, confidence) so DB schema, IPC,
+and UI need no structural change. `ai_model` is recorded as `revelio-local`.
 
-1. **CRITICAL bug fix**: `main/index.ts` loaded preload from `../preload/index.js`
-   but electron-vite emits `out/preload/index.mjs` (ESM preload, sandbox:false).
-   The mismatch would silently break `window.api` in dev AND packaged builds.
-   Fixed → `index.mjs`.
-2. **Step 11 polish — error states**:
-   - New `renderer/src/lib/errors.ts` → `errorMessage(e: unknown): string`
-   - New `ErrorState` component in `components/ui.tsx` (icon, message, Try again)
-   - All IPC loads now catch + render ErrorState with retry: Dashboard, Categories,
-     Settings (reloadKey pattern), Folders (existing error banner), DocumentDetail
-     (ErrorState on initial fail + "Could not refresh" banner on refetch fail),
-     Search (inline "Search failed" card, resets searching flag)
-3. **Step 11 polish — keyboard**: Esc on DocumentDetail navigates back to `from`;
-   back button shows `<Kbd>Esc</Kbd>` hint. (Search already had ↑/↓/Enter/Esc; App has ⌘K.)
-4. ✅ typecheck + build + 65/65 tests all green after the changes.
+New pure modules under `desktop/src/main/processing/local/` (no Electron/DB imports —
+plain Node-testable with `--experimental-strip-types`):
 
-## What session 4 did, in order
+| Module | Responsibility |
+| --- | --- |
+| `text.ts` | tokenize, light suffix stem, sentence splitting |
+| `rules.ts` | data: English stopwords, document-type keyword rules, deadline cue words |
+| `keywords.ts` | TF-scored unigrams + bigrams, proper-noun & filename boost → 3–10 tags |
+| `summarize.ts` | extractive summary: sentence scoring (term freq, position, title overlap, length penalty) → top 2–4 in document order; key_points = next best sentences |
+| `categorize.ts` | document_type via weighted keyword rules (Invoice, Receipt, Resume, Contract, Research Paper, Report, Letter, Memo, Form, Notes…); category = reuse existing library category when keywords match its name/members' keywords, else coin Title Case from top bigram; heuristic confidence 0..1 |
+| `entities.ts` | regex NER-lite: emails, URLs, phones, money amounts, proper-noun runs; multi-format date extraction → ISO, document_date from early text, is_deadline from nearby cue words |
+| `index.ts` | `analyzeLocally(input): AiAnalysis` orchestrator |
 
-> Previous thread crashed trying to visually inspect an image (icon). Rule for
-> this repo: NEVER read image files with the model — check them programmatically
-> (e.g. PNG header bytes via node one-liner).
+Why heuristics and not a bundled ML model: zero download, instant, deterministic,
+offline on any machine, no binary bloat, honest (extractive, not generative).
+An optional Ollama (local LLM, still keyless) enhancement could come later — it is
+explicitly OUT of scope for phase 2.
 
-1. Recovered state from this file. Verified step-12 prep was already in place:
-   electron-builder in devDependencies, full `build` block in package.json,
-   `dist`/`dist:win`/`dist:dir` scripts, `resources/eng.traineddata` (5.2 MB).
-2. Verified `build/icon.png` WITHOUT reading it as an image: node one-liner on
-   the PNG header → valid PNG magic, 512×512 (meets electron-builder's ≥256px).
-3. ✅ typecheck clean + 65/65 tests green before packaging.
-4. ✅ `npm run dist:win` — SUCCESS. Outputs in `desktop/release/` (gitignored):
-   - `Revelio Setup 0.1.0.exe` (~126 MB NSIS installer, oneClick=false)
-   - `win-unpacked/` portable dir with `Revelio.exe`
-   - electron-builder rebuilt better-sqlite3 for Electron 37.10.3 via @electron/rebuild
-5. Verified packaged artifacts:
-   - `release/win-unpacked/resources/resources/eng.traineddata` present (matches
-     main/index.ts resolveOcrLangDir `process.resourcesPath/resources` lookup)
-   - `app.asar.unpacked/node_modules/` contains better-sqlite3, tesseract.js,
-     tesseract.js-core, @napi-rs (asarUnpack worked)
-6. Fixed electron-builder warning "author is missed in the package.json" →
-   added `"author": "Shaik Sohail Ahmed"`; re-ran `dist:win` → clean rebuild,
-   warning gone. Remaining advisory ("use electron-builder install-app-deps
-   instead of @electron/rebuild") intentionally ignored — current postinstall
-   works for both dev and packaging.
-7. ✅ Re-ran `npm run test:search` AFTER packaging: 65/65 — better-sqlite3
-   still loads in plain Node v22 despite the Electron-ABI rebuild.
+Category stability (what the AI prompt's "existing categories" hint did): the
+categorizer receives existing category names + representative keywords per category
+from the DB, and reuses a category when the document's keywords overlap it.
 
-## Verification status (all run & passing as of last update)
+## Step roadmap (small steps, one at a time)
 
-- `npm run typecheck` ✅ clean (node + web)
-- `npm run build` ✅ (renderer bundle now 637 kB, 1683 modules)
-- `npm run test:search` ✅ 65/65 (re-verified after packaging rebuild)
-- `npm run dist:win` ✅ produces `release/Revelio Setup 0.1.0.exe` + `win-unpacked/`
+### Phase 1 of plan — the engine (pure code + tests, no app wiring yet)
+- [ ] **S1** `local/text.ts` + `local/rules.ts` — tokenizing, stopwords, stem, sentences, rule data
+- [ ] **S2** `local/keywords.ts` — term scoring + keyword extraction
+- [ ] **S3** `local/summarize.ts` — extractive summary + key points
+- [ ] **S4** `local/categorize.ts` — document type + category + confidence
+- [ ] **S5** `local/entities.ts` — entities + dates
+- [ ] **S6** `local/index.ts` orchestrator + `scripts/test-analyze.mts` test suite + `test:analyze` npm script — all green
+
+### Phase 2 of plan — rewiring the app
+- [ ] **S7** rewrite `processing/analyze.ts` → calls local engine; keep `AiOutcome` shape; reasons shrink to `NO_TEXT | ANALYSIS_ERROR`; model = `revelio-local`
+- [ ] **S8** delete `processing/providers.ts`; remove `@anthropic-ai/sdk` from package.json; refresh lockfile
+- [ ] **S9** settings: drop `provider`/`apiKey`/`model` from `AppSettings` (shared/types.ts), `DEFAULT_SETTINGS`, delete `buildAiEnv`; on load, strip stale key material from existing `settings.json` (privacy)
+- [ ] **S10** indexer: remove key pre-check + env plumbing; on startup, re-queue files whose `ai_error = 'NO_API_KEY'` for local re-analysis (heals the user's existing library)
+- [ ] **S11** db: add `categoryKeywordProfiles()` (top keywords per existing category) for category-reuse matching; wire through `runAnalysis`
+- [ ] **S12** renderer: Settings page (remove provider/key/model/Verify rows, new "runs entirely on this machine" copy), DocumentDetail (drop "Add an API key…" message, local badge copy), Categories page wording
+- [ ] **S13** `desktop/.env.example`: remove AI vars (file becomes OCR/indexing-only or is deleted)
+
+### Phase 3 of plan — verify + ship
+- [ ] **S14** typecheck + `test:search` + `test:analyze` + build — all green
+- [ ] **S15** repackage `npm run dist:win`; verify artifacts again
+- [ ] **S16** update `docs/desktop-plan.md` AI-keys row + commit (only when user asks)
+
+## Progress log
+
+- 2026-08-28 Committed phase 1 (`c3bba1b`). Wrote this plan. Starting S1.
+
+## Verification status
+
+- `npm run typecheck` ✅ (as of phase-1 commit)
+- `npm run test:search` ✅ 65/65
+- `npm run build` ✅
+- `npm run dist:win` ✅ `release/Revelio Setup 0.1.0.exe`
 
 ## Next unfinished task (start here in a new session)
 
-Step 12 is DONE. Only two items remain, both gated on the user:
+**S1** — create `desktop/src/main/processing/local/text.ts` and `local/rules.ts`.
+Then continue S2…S16 in order, ticking boxes and logging progress above.
 
-1. **Manual smoke test** (needs a GUI — user must do it): either run
-   `release/win-unpacked/Revelio.exe` directly, install the Setup exe, or
-   `cd desktop && npm run dev`. Check: Dashboard empty state → connect a
-   folder → indexing progress in sidebar → search → open a document →
-   Esc/back returns with query intact → ⌘K focuses search → dark-mode
-   toggle persists. OCR path needs an image/PDF with text in a connected folder.
-2. **Commit everything** — `desktop/`, `docs/desktop-plan.md`, `context.md`
-   are UNTRACKED on branch `sohail-desktop`. Only if user asks.
-   `desktop/release/` is gitignored (installer stays local).
+## Key facts / gotchas
 
-## Key facts / gotchas (verified)
-
-- Repo root = `E:\sohail\code\Build-a-thon\Revelio`; project tool paths prefix `Revelio/`.
+- Repo root = `E:\sohail\code\Build-a-thon\Revelio`; tool paths prefix `Revelio/`.
   Shell `cd Revelio` lands in the repo root (git bash on Windows).
-- Git: branch `sohail-desktop`; `desktop/`, `docs/desktop-plan.md` untracked; nothing committed by us.
-- Node v22.20.0; type stripping available; plain Node can load better-sqlite3 here.
-- Dark mode: Tailwind v4 `@custom-variant dark (&:where(.dark, .dark *))` in
-  `desktop/src/renderer/src/styles.css`; tokens under `:root` and `.dark`.
-- Page component signatures (for App wiring, already done):
-  - `Dashboard({ dataVersion, progress, onNavigate })`
-  - `SearchPage({ initialQuery?, onNavigate, inputRef })`
-  - `DocumentDetail({ id, from, onNavigate })`
-  - `Categories({ dataVersion, onNavigate })`
-  - `Folders({ dataVersion })`
-  - `SettingsPage()` no props
-  - `Sidebar({ view, onNavigate, progress, dark, onToggleDark })`
-- IPC contract = `desktop/src/shared/types.ts` (RevelioApi, MainEvent, IndexProgress…).
-- Events main→renderer on channel `revelio:event`; types: index:progress / index:finished / files:changed.
-- Frontend (web) test culture: `node --experimental-strip-types` + node:assert/strict, no test framework.
-- Desktop commands (all from `desktop/`): `npm run typecheck`, `npm run build`,
-  `npm run test:search`, `npm run dev` (GUI). All green as of last update.
-- Parser quirk kept as-is: an unresolvable `modified:xyz` token is consumed from
-  the text but sets no filter (documented by test 'unresolvable modified: value').
-- User instruction: keep this file updated after EVERY completed sub-task.
+- Git: branch `sohail-desktop`; phase 1 committed as `c3bba1b`; phase 2 uncommitted.
 - NEVER read image files (icons, screenshots) with the model — text-only model.
   Verify images programmatically (PNG header bytes, file size) if needed.
-- Packaging facts: electron-builder 26.15.3, Electron 37.10.3, NSIS target x64.
-  Icon auto-converted to .ico (`release/.icon-ico/`). Unsigned build (no cert).
-  `release/` dir ≈ 400 MB total (installer + win-unpacked), gitignored.
+- Node v22.20.0; tests run with `node --experimental-strip-types` + node:assert/strict,
+  no test framework. Runtime relative imports in Node-loaded modules need explicit
+  `.ts` extensions (`allowImportingTsExtensions` is on in tsconfig.node.json).
+- The local engine modules must stay dependency-free and DB-free so plain Node tests
+  can import them directly. Category profiles are PASSED IN by the caller.
+- `AiAnalysis`/`AiOutcome` live in `processing/analyze.ts`; DB write = `saveAnalysis`
+  in `db/db.ts`; existing-category list = `listExistingCategories()`.
+- IPC contract = `desktop/src/shared/types.ts`. `AppSettings` currently has
+  provider/apiKey/model — removed in S9. Settings file: `userData/settings.json`,
+  loaded with `{...DEFAULT_SETTINGS, ...parsed}` (unknown keys tolerated, but S9
+  actively strips key material and rewrites the file).
+- Indexer queue concurrency = 2; local analysis is milliseconds, so no throttling
+  needed. `ai_status` flow (pending → ok/skipped/failed) stays.
+- Desktop commands (from `desktop/`): `npm run typecheck`, `npm run build`,
+  `npm run test:search`, `npm run dev` (GUI), `npm run dist:win`.
+- Packaging: electron-builder 26.15.3, Electron 37.10.3, NSIS x64, unsigned.
+  `release/` gitignored. Icon 512×512 at `desktop/build/icon.png`.
+- User instructions: keep this file updated after EVERY step; plan in small steps
+  and achieve them one by one; don't inspect images.
