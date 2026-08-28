@@ -1,0 +1,84 @@
+{
+  "name": "revelio-desktop",
+  "version": "0.1.0",
+  "description": "AI assistant for your local files — index, search, and understand documents on your own disk.",
+  "private": true,
+  "author": "Shaik Sohail Ahmed",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:dir": "electron-vite build && electron-builder --dir",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json --composite false && tsc --noEmit -p tsconfig.web.json --composite false",
+    "test:search": "node --experimental-strip-types scripts/test-search.mts",
+    "postinstall": "electron-rebuild -f -w better-sqlite3 || echo electron-rebuild failed; better-sqlite3 may still have a usable prebuild"
+  },
+  "build": {
+    "appId": "org.revelio.desktop",
+    "productName": "Revelio",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**"
+    ],
+    "extraResources": [
+      { "from": "resources/eng.traineddata", "to": "resources/eng.traineddata" }
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/tesseract.js/**",
+      "**/node_modules/tesseract.js-core/**",
+      "**/node_modules/@napi-rs/canvas/**"
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Utility"
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
+    "@napi-rs/canvas": "^1.0.7",
+    "better-sqlite3": "^12.2.0",
+    "chokidar": "^4.0.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.544.0",
+    "mammoth": "^1.10.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tesseract.js": "^7.0.0",
+    "unpdf": "^1.8.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "electron": "^37.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^4.0.0",
+    "postcss": "^8.5.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.3.5"
+  }
+}

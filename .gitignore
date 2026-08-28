@@ -41,6 +41,8 @@ pip-log.txt
 dist/
 build/
 out/
+# Exception: desktop/build/ holds electron-builder packaging resources (icon)
+!desktop/build/
 .next/
 .nuxt/
 .svelte-kit/
